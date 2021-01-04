@@ -6,12 +6,13 @@ import sys
 from typing import Iterable
 import numpy as np
 from collections import defaultdict
+import pandas as pd
 from ..callbacks import CallbackList
 
 
 class Learner:
     def __init__(self, module):
-        self.__module = module
+        self.module = module
         self.stop_training = False
 
     def _splitor(self, batch, n_target, device):
@@ -26,6 +27,8 @@ class Learner:
             return DataLoader(dataset, batch_size=batch_size)
         elif isinstance(dataset, DataLoader):
             return dataset
+        elif isinstance(dataset, np.ndarray) or isinstance(dataset, T.Tensor):
+            return DataLoader(TensorDataset(T.tensor(dataset)), batch_size=batch_size)
         elif isinstance(dataset, Iterable):
             dataset = [T.tensor(a) for a in dataset]
             return DataLoader(TensorDataset(*dataset), batch_size=batch_size)
@@ -43,7 +46,7 @@ class Learner:
         callbacks: list of `Callback`
         """
         if callable(optimizer_fn):
-            opt = optimizer_fn(self.__module.parameters())    # other parameters could be passed by `partial`
+            opt = optimizer_fn(self.module.parameters())    # other parameters could be passed by `partial`
         else:
             assert isinstance(optimizer_fn, T.optim.Optimizer)
             opt = optimizer_fn
@@ -60,18 +63,19 @@ class Learner:
         n_target = len(loss_fn)
         training_logging = []
         validation_logging = []
+        self.module.to(device)
         for e in range(epochs):
             if self.stop_training:
                 break
             # train
-            self.__module.train()
+            self.module.train()
             running_mean = defaultdict(float) if metrics and train_scoring else None
             running_loss = .0
             pbar = tqdm(enumerate(train_ld), total=len(train_ld), file=sys.stdout)
             for i, batch in pbar:
                 opt.zero_grad()
                 input, target = self._splitor(batch, n_target, device)
-                res = self.__module(*input)
+                res = self.module(*input)
                 if n_target ==1:
                     res = (res, )
                 loss = 0.
@@ -85,25 +89,25 @@ class Learner:
                     for j in range(len(metrics)):
                         k = metrics[j][0]
                         mn = metrics[j][1]
-                        running_mean[mn] = (running_mean[mn] * i + metrics[j][2](res[k].detach(), target[k]).cpu().numpy()) / (1 + i)
+                        running_mean[mn] = (running_mean[mn] * i + metrics[j][2](res[k].detach(), target[k])) / (1 + i)
                         metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
                     metrics_output = ', ' + ', '.join(metrics_output)
                 else:
                     metrics_output = ''
                 description = f'Epoch [{e}/{epochs}]: loss={running_loss:.5f}' + metrics_output
                 pbar.set_description(description)
-            training_logging.append({**{'loss': running_loss}, **running_mean})
+            training_logging.append({**{'epoch': e, 'loss': running_loss}, **running_mean})
             if validation_set is None:
                 continue
             # validation
-            self.__module.eval()
+            self.module.eval()
             running_mean = defaultdict(float) if metrics else None
             running_loss = .0
             pbar = tqdm(enumerate(val_ld), total=len(val_ld), file=sys.stdout)
-            self.__module.eval()
+            self.module.eval()
             for i, batch in pbar:
                 input, target = self._splitor(batch, n_target, device)
-                res = self.__module(*input)
+                res = self.module(*input)
                 if n_target == 1:
                     res = (res, )
                 loss = 0.
@@ -115,19 +119,39 @@ class Learner:
                     for j in range(len(metrics)):
                         k = metrics[j][0]
                         mn = f'val_{metrics[j][1]}'
-                        running_mean[mn] = (running_mean[mn] * i + metrics[j][2](res[k].detach(), target[k]).cpu().numpy()) / (1 + i)
+                        running_mean[mn] = (running_mean[mn] * i + metrics[j][2](res[k].detach(), target[k])) / (1 + i)
                         metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
                     metrics_output = ', ' + ', '.join(metrics_output)
                 else:
                     metrics_output = ''
                 description = f'Epoch [{e}/{epochs}]: val_loss={running_loss:.5f}' + metrics_output
                 pbar.set_description(description)
-            validation_logging.append({**{'val_loss': running_loss}, **running_mean})
+            validation_logging.append({**{'epoch': e, 'val_loss': running_loss}, **running_mean})
             if callbacks:
                 callbacks.on_epoch_end(training_logging, validation_logging)
+        return pd.DataFrame.from_records(training_logging), pd.DataFrame.from_records(validation_logging)
+    
+    def predict(self, X, batch_size, device='cpu'):
+        dl = self._make_dataloader(X, batch_size)
+        output = []
+        self.module.eval()
+        with T.no_grad():
+            for i, batch in enumerate(dl):
+                input = [c.to(device) for c in batch]
+                res = self.module(*input)
+                if not isinstance(res, tuple):
+                    res = (res, )
+                res = (c.cpu().numpy() for c in res)
+                output.append(res)
+        tmp = tuple(map(np.concatenate, zip(*output)))
+        if len(tmp)==1:
+            return tmp[0]
+        return tmp
 
     def save(self, fname):
-        T.save(self.__module.state_dict(), fname)
+        T.save(self.module.state_dict(), fname)
 
     def load(self, fname, device):
-        self.__module.load_state_dict(T.load(fname, map_location=device))
+        self.module.load_state_dict(T.load(fname, map_location=device))
+        self.module.to(device)
+        return self
