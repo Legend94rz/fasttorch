@@ -1,1 +1,4 @@
 /.idea/
+/Fasttorch.egg-info/
+/build/
+/dist/

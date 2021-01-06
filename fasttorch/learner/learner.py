@@ -76,7 +76,7 @@ class Learner:
                 opt.zero_grad()
                 input, target = self._splitor(batch, n_target, device)
                 res = self.module(*input)
-                if n_target ==1:
+                if n_target == 1:
                     res = (res, )
                 loss = 0.
                 for j in range(n_target):
@@ -144,7 +144,7 @@ class Learner:
                 res = (c.cpu().numpy() for c in res)
                 output.append(res)
         tmp = tuple(map(np.concatenate, zip(*output)))
-        if len(tmp)==1:
+        if len(tmp) == 1:
             return tmp[0]
         return tmp
 
