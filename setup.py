@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 
 setup(
     name='Fasttorch',
-    version='1.0.1',
+    version='1.0.2',
     author="Legend",
     description="A keras-like library for pytorch.",
     packages=find_packages(),
@@ -14,7 +14,7 @@ setup(
     zip_safe=False,
     # 设置依赖包
     install_requires=[
-        'scikit-learn', 'torch', 'tqdm'
+        'scikit-learn', 'torch', 'tqdm', 'pandas',
     ],
 )
 

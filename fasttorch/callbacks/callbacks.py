@@ -1,4 +1,3 @@
-from abc import ABC, abstractmethod
 from typing import Iterable
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from functools import partial
@@ -7,15 +6,17 @@ import numpy as np
 from pathlib import Path
 
 
-class BaseCallback(ABC):
+class BaseCallback:
     def set_model(self, learner):
         self.learner = learner
 
-    def set_optimizer(self, optimizer):
-        self.optimizer = optimizer
+    def set_params(self, params):
+        self.params = params
 
-    @abstractmethod
     def on_epoch_end(self, training_log, validation_log):
+        pass
+
+    def on_train_end(self, training_log, validation_log):
         pass
 
 
@@ -27,9 +28,9 @@ class ReduceLROnPlateauCallback(BaseCallback):
                  verbose=verbose, threshold=threshold, threshold_mode=threshold_mode,
                  cooldown=cooldown, min_lr=min_lr, eps=eps)
 
-    def set_optimizer(self, optimizer):
-        super().set_optimizer(optimizer)
-        self.schedule = self.__schdule_fn(optimizer)
+    def set_params(self, params):
+        super().set_params(params)
+        self.schedule = self.__schdule_fn(params['optimizer'])
 
     def on_epoch_end(self, training_log, validation_log):
         cur_log = {**training_log[-1], **validation_log[-1]}
@@ -45,9 +46,9 @@ class CallbackList(BaseCallback):
         for cbk in self.callbacks:
             cbk.set_model(learner)
 
-    def set_optimizer(self, optimizer):
+    def set_params(self, params):
         for cbk in self.callbacks:
-            cbk.set_optimizer(optimizer)
+            cbk.set_params(params)
 
     def on_epoch_end(self, training_log, validation_log):
         for cbk in self.callbacks:
@@ -55,27 +56,37 @@ class CallbackList(BaseCallback):
 
 
 class EarlyStoppingCallback(BaseCallback):
-    def __init__(self, monitor='val_loss', patience=1, mode='min', verbose=False):
+    def __init__(self, monitor='val_loss', patience=1, mode='min', verbose=False, restore_best_weights=True):
         self.monitor = monitor
         self.patience = patience
         self.mode = mode
         self.epoch = -1
         self.verbose = verbose
+        self.restore_best_weights = restore_best_weights
+        self.best_model = None
         if mode == 'min':
-            self.opt = float('inf')
-        else:
-            self.opt = float('-inf')
+            self.monitor_op = np.less
+            self.best = np.Inf
+        elif mode == 'max':
+            self.monitor_op = np.greater
+            self.best = -np.Inf
 
     def on_epoch_end(self, training_log, validation_log):
         cur_log = {**training_log[-1], **validation_log[-1]}
-        if (self.mode == 'min' and cur_log[self.monitor] < self.opt) or (self.mode == 'max' and cur_log[self.monitor] > self.opt):
-            self.opt = cur_log[self.monitor]
+        if self.monitor_op(cur_log[self.monitor], self.best):
+            self.best = cur_log[self.monitor]
             self.epoch = len(training_log)
+            self.best_model = self.learner.module.state_dict()
         else:
             if len(training_log) - self.epoch > self.patience:
                 self.learner.stop_training = True
                 if self.verbose:
                     print("Early stopping")
+
+    def on_train_end(self, training_log, validation_log):
+        self.learner.best_epoch = self.epoch
+        if self.restore_best_weights:
+            self.learner.module.load_state_dict(self.best_model)
 
 
 class ModelCheckpoint(BaseCallback):

@@ -35,9 +35,10 @@ class Learner:
         else:
             raise NotImplementedError
 
-    def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn, metrics=None, train_scoring=True, validation_set=None, callbacks=None, device='cpu'):
+    def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn, metrics=None, train_scoring=True, validation_set=None, callbacks=None, device='cpu', verbose=True):
         """
         training_set: (x1, x2, ..., y1, y2, ...), torch Dataset or DataLoader
+        batch_size: ignored when training_set is `DataLoader` instance.T
         optimizer_fn: callable or optim instance
         loss_fn: callable (including loss instance) or list of these two type for multi target.
                 if loss_fn is a list, the last `len(loss_fn)` components of training_set will be considered as labels respectivelly.
@@ -53,10 +54,10 @@ class Learner:
         # todo: loss_fn is [callable] or [Loss instance]
         if not isinstance(loss_fn, Iterable):
             loss_fn = [loss_fn]
-        if callbacks:
-            callbacks = CallbackList(callbacks)
-            callbacks.set_model(self)
-            callbacks.set_optimizer(opt)
+        callbacks = [] if callbacks is None else callbacks
+        callbacks = CallbackList(callbacks)
+        callbacks.set_model(self)
+        callbacks.set_params({'optimizer': opt})
 
         train_ld = self._make_dataloader(training_set, batch_size)
         val_ld = self._make_dataloader(validation_set, batch_size)
@@ -71,7 +72,7 @@ class Learner:
             self.module.train()
             running_mean = defaultdict(float) if metrics and train_scoring else None
             running_loss = .0
-            pbar = tqdm(enumerate(train_ld), total=len(train_ld), file=sys.stdout)
+            pbar = tqdm(enumerate(train_ld), total=len(train_ld), file=sys.stdout, disable=verbose)
             for i, batch in pbar:
                 opt.zero_grad()
                 input, target = self._splitor(batch, n_target, device)
@@ -103,7 +104,7 @@ class Learner:
             self.module.eval()
             running_mean = defaultdict(float) if metrics else None
             running_loss = .0
-            pbar = tqdm(enumerate(val_ld), total=len(val_ld), file=sys.stdout)
+            pbar = tqdm(enumerate(val_ld), total=len(val_ld), file=sys.stdout, disable=verbose)
             self.module.eval()
             for i, batch in pbar:
                 input, target = self._splitor(batch, n_target, device)
@@ -127,8 +128,8 @@ class Learner:
                 description = f'Epoch [{e}/{epochs}]: val_loss={running_loss:.5f}' + metrics_output
                 pbar.set_description(description)
             validation_logging.append({**{'epoch': e, 'val_loss': running_loss}, **running_mean})
-            if callbacks:
-                callbacks.on_epoch_end(training_logging, validation_logging)
+            callbacks.on_epoch_end(training_logging, validation_logging)
+        callbacks.on_train_end(training_logging, validation_logging)
         return pd.DataFrame.from_records(training_logging), pd.DataFrame.from_records(validation_logging)
     
     def predict(self, X, batch_size, device='cpu'):
