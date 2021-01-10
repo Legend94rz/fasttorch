@@ -9,13 +9,13 @@ import random
 
 def _worker_init():
     local = threading.current_thread()
-    #local.__dict__['stream'] = T.cuda.Stream()
+    local.__dict__['stream'] = T.cuda.Stream()
 
 
 def _worker_main(args):
     batch, device = args
-    #with T.cuda.stream(threading.current_thread().__dict__['stream']):
-    return (b.to(device) for b in batch)
+    with T.cuda.stream(threading.current_thread().__dict__['stream']):
+        return [b.to(device) for b in batch]
 
 
 class AsynchronousLoader:
@@ -33,23 +33,20 @@ class AsynchronousLoader:
 
     def _fill(self, njob, nworker):
         p = ThreadPool(nworker, initializer=_worker_init)
-        print('_fill init')
         while True:
             _ = self.inq.get()
             is_finish = False
             lst = []
             try:
                 for _ in range(njob):
-                    t = next(self.it)
-                    print(t[0])
-                    lst.append((t[1], self.device))
+                    lst.append((next(self.it), self.device))
             except StopIteration:
                 is_finish = True
             self.outq.put((p.map(_worker_main, lst), is_finish))
 
     def __iter__(self):
         self.idx = 0
-        self.it = enumerate(self.dataloader)
+        self.it = iter(self.dataloader)
         self.inq.put(0)
         self.front_buf = self.outq.get()
         return self
@@ -58,6 +55,7 @@ class AsynchronousLoader:
         if self.idx == 0:
             self.inq.put(0)
         if self.idx >= len(self.front_buf[0]):
+            self.outq.get()  # clear queue
             raise StopIteration
         res = self.front_buf[0][self.idx]
         self.idx += 1
