@@ -1,5 +1,4 @@
 import torch as T
-from torch import nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from tqdm import tqdm
 import sys
@@ -8,6 +7,41 @@ import numpy as np
 from collections import defaultdict
 import pandas as pd
 from ..callbacks import CallbackList
+from .async_loader import AsynchronousLoader
+
+
+def _fill(it, n, device):
+    q = []
+    is_finish = False
+    for i in range(n):
+        try:
+            i, batch = next(it)
+        except StopIteration:
+            is_finish = True
+            break
+        q.append((i, (c.to(device, non_blocking=True) for c in batch)))
+    return q, is_finish
+
+
+def _splitor(batch, n_target, device):
+    batch = [c.to(device, non_blocking=True) for c in batch]
+    return batch[:-n_target], batch[-n_target:]
+
+
+def _make_dataloader(dataset, batch_size):
+    if dataset is None:
+        return None
+    if isinstance(dataset, Dataset):
+        return DataLoader(dataset, batch_size=batch_size, pin_memory=True)
+    elif isinstance(dataset, DataLoader):
+        return dataset
+    elif isinstance(dataset, np.ndarray) or isinstance(dataset, T.Tensor):
+        return DataLoader(TensorDataset(T.tensor(dataset)), batch_size=batch_size, pin_memory=True)
+    elif isinstance(dataset, Iterable):
+        dataset = [T.tensor(a) for a in dataset]
+        return DataLoader(TensorDataset(*dataset), batch_size=batch_size, pin_memory=True)
+    else:
+        raise NotImplementedError
 
 
 class Learner:
@@ -15,27 +49,56 @@ class Learner:
         self.module = module
         self.stop_training = False
 
-    def _splitor(self, batch, n_target, device):
-        input = [c.to(device) for c in batch[:-n_target]]
-        target = [c.to(device) for c in batch[-n_target:]]
-        return input, target
-
-    def _make_dataloader(self, dataset, batch_size):
-        if dataset is None:
-            return None
-        if isinstance(dataset, Dataset):
-            return DataLoader(dataset, batch_size=batch_size)
-        elif isinstance(dataset, DataLoader):
-            return dataset
-        elif isinstance(dataset, np.ndarray) or isinstance(dataset, T.Tensor):
-            return DataLoader(TensorDataset(T.tensor(dataset)), batch_size=batch_size)
-        elif isinstance(dataset, Iterable):
-            dataset = [T.tensor(a) for a in dataset]
-            return DataLoader(TensorDataset(*dataset), batch_size=batch_size)
+    def _walk_through_data(self, split, cur_epoch, total_epochs, opt, loss_fn, metrics, prefetch_batches, device, verbose):
+        assert (split in ('train', 'val'))
+        log_prefix = '' if split == 'train' else 'val_'
+        dataloader = self.train_ld if split == 'train' else self.val_ld
+        if split == 'train':
+            self.module.train()
         else:
-            raise NotImplementedError
+            self.module.eval()
 
-    def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn, metrics=None, train_scoring=True, validation_set=None, callbacks=None, device='cpu', verbose=True):
+        running_mean = defaultdict(float) if metrics else None
+        running_loss = .0
+        pbar = tqdm(enumerate(dataloader), total=len(dataloader), file=sys.stdout, disable=not verbose)
+        it = iter(pbar)
+        buffers = [_fill(it, prefetch_batches, device), _fill(it, prefetch_batches, device)]
+        front_id = 0
+        while True:
+            front_q, finished = buffers[front_id]
+            for i, batch in front_q:
+                if split == 'train':
+                    opt.zero_grad()
+                input, target = _splitor(batch, self.n_target, device)
+                res = self.module(*input)
+                if self.n_target == 1:
+                    res = (res,)
+                loss = 0.
+                for j in range(self.n_target):
+                    loss += loss_fn[j](res[j], target[j])
+                running_loss = (running_loss * i + float(loss)) / (1 + i)
+                if split == 'train':
+                    loss.backward()
+                    opt.step()
+                if running_mean is not None:
+                    metrics_output = []
+                    for j in range(len(metrics)):
+                        k = metrics[j][0]
+                        mn = log_prefix+metrics[j][1]
+                        running_mean[mn] = (running_mean[mn] * i + metrics[j][2](res[k].detach(), target[k])) / (1 + i)
+                        metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
+                    metrics_output = ', ' + ', '.join(metrics_output)
+                else:
+                    metrics_output = ''
+                description = f'Epoch [{cur_epoch}/{total_epochs}]: {log_prefix}loss={running_loss:.5f}' + metrics_output
+                pbar.set_description(description)
+            if finished:
+                break
+            buffers[front_id] = _fill(it, prefetch_batches, device)
+            front_id = 1 - front_id
+        return running_loss, running_mean
+
+    def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn, metrics=None, validation_set=None, callbacks=None, device='cpu', prefetch_batches=8, verbose=True):
         """
         training_set: (x1, x2, ..., y1, y2, ...), torch Dataset or DataLoader
         batch_size: ignored when training_set is `DataLoader` instance.T
@@ -59,86 +122,31 @@ class Learner:
         callbacks.set_model(self)
         callbacks.set_params({'optimizer': opt})
 
-        train_ld = self._make_dataloader(training_set, batch_size)
-        val_ld = self._make_dataloader(validation_set, batch_size)
-        n_target = len(loss_fn)
+        self.train_ld = _make_dataloader(training_set, batch_size)
+        self.val_ld = _make_dataloader(validation_set, batch_size)
+        self.n_target = len(loss_fn)
         training_logging = []
         validation_logging = []
         self.module.to(device)
         for e in range(epochs):
             if self.stop_training:
                 break
-            # train
-            self.module.train()
-            running_mean = defaultdict(float) if metrics and train_scoring else None
-            running_loss = .0
-            pbar = tqdm(enumerate(train_ld), total=len(train_ld), file=sys.stdout, disable=verbose)
-            for i, batch in pbar:
-                opt.zero_grad()
-                input, target = self._splitor(batch, n_target, device)
-                res = self.module(*input)
-                if n_target == 1:
-                    res = (res, )
-                loss = 0.
-                for j in range(n_target):
-                    loss += loss_fn[j](res[j], target[j])
-                loss.backward()
-                running_loss = (running_loss * i + float(loss)) / (1 + i)
-                opt.step()
-                if running_mean is not None:
-                    metrics_output = []
-                    for j in range(len(metrics)):
-                        k = metrics[j][0]
-                        mn = metrics[j][1]
-                        running_mean[mn] = (running_mean[mn] * i + metrics[j][2](res[k].detach(), target[k])) / (1 + i)
-                        metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
-                    metrics_output = ', ' + ', '.join(metrics_output)
-                else:
-                    metrics_output = ''
-                description = f'Epoch [{e}/{epochs}]: loss={running_loss:.5f}' + metrics_output
-                pbar.set_description(description)
+            running_loss, running_mean = self._walk_through_data('train', e, epochs, opt, loss_fn, metrics, prefetch_batches, device, verbose)
             training_logging.append({**{'epoch': e, 'loss': running_loss}, **running_mean})
-            if validation_set is None:
-                continue
-            # validation
-            self.module.eval()
-            running_mean = defaultdict(float) if metrics else None
-            running_loss = .0
-            pbar = tqdm(enumerate(val_ld), total=len(val_ld), file=sys.stdout, disable=verbose)
-            self.module.eval()
-            for i, batch in pbar:
-                input, target = self._splitor(batch, n_target, device)
-                res = self.module(*input)
-                if n_target == 1:
-                    res = (res, )
-                loss = 0.
-                for j in range(n_target):
-                    loss += loss_fn[j](res[j], target[j])
-                running_loss = (running_loss * i + float(loss)) / (1 + i)
-                if running_mean is not None:
-                    metrics_output = []
-                    for j in range(len(metrics)):
-                        k = metrics[j][0]
-                        mn = f'val_{metrics[j][1]}'
-                        running_mean[mn] = (running_mean[mn] * i + metrics[j][2](res[k].detach(), target[k])) / (1 + i)
-                        metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
-                    metrics_output = ', ' + ', '.join(metrics_output)
-                else:
-                    metrics_output = ''
-                description = f'Epoch [{e}/{epochs}]: val_loss={running_loss:.5f}' + metrics_output
-                pbar.set_description(description)
-            validation_logging.append({**{'epoch': e, 'val_loss': running_loss}, **running_mean})
+            if validation_set is not None:
+                running_loss, running_mean = self._walk_through_data('val', e, epochs, None, loss_fn, metrics, prefetch_batches, device, verbose)
+                validation_logging.append({**{'epoch': e, 'val_loss': running_loss}, **running_mean})
             callbacks.on_epoch_end(training_logging, validation_logging)
         callbacks.on_train_end(training_logging, validation_logging)
         return pd.DataFrame.from_records(training_logging), pd.DataFrame.from_records(validation_logging)
     
     def predict(self, X, batch_size, device='cpu'):
-        dl = self._make_dataloader(X, batch_size)
+        dl = _make_dataloader(X, batch_size)
         output = []
         self.module.eval()
         with T.no_grad():
             for i, batch in enumerate(dl):
-                input = [c.to(device) for c in batch]
+                input = [c.to(device, non_blocking=True) for c in batch]
                 res = self.module(*input)
                 if not isinstance(res, tuple):
                     res = (res, )

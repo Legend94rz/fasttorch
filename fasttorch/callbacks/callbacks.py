@@ -20,23 +20,6 @@ class BaseCallback:
         pass
 
 
-class ReduceLROnPlateauCallback(BaseCallback):
-    def __init__(self, monitor='val_loss', mode='min', factor=0.1, patience=10,
-                 verbose=False, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-8):
-        self.monitor = monitor
-        self.__schdule_fn = partial(ReduceLROnPlateau, mode=mode, factor=factor, patience=patience,
-                 verbose=verbose, threshold=threshold, threshold_mode=threshold_mode,
-                 cooldown=cooldown, min_lr=min_lr, eps=eps)
-
-    def set_params(self, params):
-        super().set_params(params)
-        self.schedule = self.__schdule_fn(params['optimizer'])
-
-    def on_epoch_end(self, training_log, validation_log):
-        cur_log = {**training_log[-1], **validation_log[-1]}
-        self.schedule.step(cur_log[self.monitor])
-
-
 class CallbackList(BaseCallback):
     def __init__(self, callbacks):
         assert isinstance(callbacks, Iterable)
@@ -53,6 +36,27 @@ class CallbackList(BaseCallback):
     def on_epoch_end(self, training_log, validation_log):
         for cbk in self.callbacks:
             cbk.on_epoch_end(training_log, validation_log)
+
+    def on_train_end(self, training_log, validation_log):
+        for cbk in self.callbacks:
+            cbk.on_train_end(training_log, validation_log)
+
+
+class ReduceLROnPlateauCallback(BaseCallback):
+    def __init__(self, monitor='val_loss', mode='min', factor=0.1, patience=10,
+                 verbose=False, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-8):
+        self.monitor = monitor
+        self.__schdule_fn = partial(ReduceLROnPlateau, mode=mode, factor=factor, patience=patience,
+                 verbose=verbose, threshold=threshold, threshold_mode=threshold_mode,
+                 cooldown=cooldown, min_lr=min_lr, eps=eps)
+
+    def set_params(self, params):
+        super().set_params(params)
+        self.schedule = self.__schdule_fn(params['optimizer'])
+
+    def on_epoch_end(self, training_log, validation_log):
+        cur_log = {**training_log[-1], **validation_log[-1]}
+        self.schedule.step(cur_log[self.monitor])
 
 
 class EarlyStoppingCallback(BaseCallback):
