@@ -7,7 +7,7 @@ import numpy as np
 from collections import defaultdict
 import pandas as pd
 from ..callbacks import CallbackList
-from .async_loader import AsynchronousLoader
+from ..my_loader import AsynchronousLoader
 
 
 def _fill(it, n, device):
@@ -61,41 +61,32 @@ class Learner:
         running_mean = defaultdict(float) if metrics else None
         running_loss = .0
         pbar = tqdm(enumerate(dataloader), total=len(dataloader), file=sys.stdout, disable=not verbose)
-        it = iter(pbar)
-        buffers = [_fill(it, prefetch_batches, device), _fill(it, prefetch_batches, device)]
-        front_id = 0
-        while True:
-            front_q, finished = buffers[front_id]
-            for i, batch in front_q:
-                if split == 'train':
-                    opt.zero_grad()
-                input, target = _splitor(batch, self.n_target, device)
-                res = self.module(*input)
-                if self.n_target == 1:
-                    res = (res,)
-                loss = 0.
-                for j in range(self.n_target):
-                    loss += loss_fn[j](res[j], target[j])
-                running_loss = (running_loss * i + float(loss)) / (1 + i)
-                if split == 'train':
-                    loss.backward()
-                    opt.step()
-                if running_mean is not None:
-                    metrics_output = []
-                    for j in range(len(metrics)):
-                        k = metrics[j][0]
-                        mn = log_prefix+metrics[j][1]
-                        running_mean[mn] = (running_mean[mn] * i + metrics[j][2](res[k].detach(), target[k])) / (1 + i)
-                        metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
-                    metrics_output = ', ' + ', '.join(metrics_output)
-                else:
-                    metrics_output = ''
-                description = f'Epoch [{cur_epoch}/{total_epochs}]: {log_prefix}loss={running_loss:.5f}' + metrics_output
-                pbar.set_description(description)
-            if finished:
-                break
-            buffers[front_id] = _fill(it, prefetch_batches, device)
-            front_id = 1 - front_id
+        for i, batch in pbar:
+            if split == 'train':
+                opt.zero_grad()
+            input, target = _splitor(batch, self.n_target, device)
+            res = self.module(*input)
+            if self.n_target == 1:
+                res = (res,)
+            loss = 0.
+            for j in range(self.n_target):
+                loss += loss_fn[j](res[j], target[j])
+            running_loss = (running_loss * i + float(loss)) / (1 + i)
+            if split == 'train':
+                loss.backward()
+                opt.step()
+            if running_mean is not None:
+                metrics_output = []
+                for j in range(len(metrics)):
+                    k = metrics[j][0]
+                    mn = log_prefix + metrics[j][1]
+                    running_mean[mn] = (running_mean[mn] * i + metrics[j][2](res[k].detach(), target[k])) / (1 + i)
+                    metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
+                metrics_output = ', ' + ', '.join(metrics_output)
+            else:
+                metrics_output = ''
+            description = f'Epoch [{cur_epoch}/{total_epochs}]: {log_prefix}loss={running_loss:.5f}' + metrics_output
+            pbar.set_description(description)
         return running_loss, running_mean
 
     def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn, metrics=None, validation_set=None, callbacks=None, device='cpu', prefetch_batches=8, verbose=True):
@@ -122,8 +113,8 @@ class Learner:
         callbacks.set_model(self)
         callbacks.set_params({'optimizer': opt})
 
-        self.train_ld = _make_dataloader(training_set, batch_size)
-        self.val_ld = _make_dataloader(validation_set, batch_size)
+        self.train_ld = AsynchronousLoader(_make_dataloader(training_set, batch_size), device, prefetch_batches)
+        self.val_ld = AsynchronousLoader(_make_dataloader(validation_set, batch_size), device, prefetch_batches)
         self.n_target = len(loss_fn)
         training_logging = []
         validation_logging = []
