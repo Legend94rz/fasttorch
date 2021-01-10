@@ -33,20 +33,23 @@ class AsynchronousLoader:
 
     def _fill(self, njob, nworker):
         p = ThreadPool(nworker, initializer=_worker_init)
+        print('_fill init')
         while True:
             _ = self.inq.get()
             is_finish = False
             lst = []
             try:
                 for _ in range(njob):
-                    lst.append((next(self.it), self.device))
+                    t = next(self.it)
+                    print(t[0])
+                    lst.append((t[1], self.device))
             except StopIteration:
                 is_finish = True
             self.outq.put((p.map(_worker_main, lst), is_finish))
 
     def __iter__(self):
         self.idx = 0
-        self.it = iter(self.dataloader)
+        self.it = enumerate(self.dataloader)
         self.inq.put(0)
         self.front_buf = self.outq.get()
         return self
