@@ -6,6 +6,7 @@ from typing import Iterable
 import numpy as np
 from collections import defaultdict
 import pandas as pd
+from ..data.tensor_dataloader import TensorDataLoader
 from ..callbacks import CallbackList
 
 
@@ -18,14 +19,14 @@ def _make_dataloader(dataset, batch_size):
     if dataset is None:
         return None
     if isinstance(dataset, Dataset):
-        return DataLoader(dataset, batch_size=batch_size, pin_memory=True)
-    elif isinstance(dataset, DataLoader):
+        return DataLoader(dataset, batch_size=batch_size, pin_memory=False)
+    elif isinstance(dataset, DataLoader) or isinstance(dataset, TensorDataLoader):
         return dataset
     elif isinstance(dataset, np.ndarray) or isinstance(dataset, T.Tensor):
-        return DataLoader(TensorDataset(T.tensor(dataset)), batch_size=batch_size, pin_memory=True)
+        return DataLoader(TensorDataset(T.tensor(dataset)), batch_size=batch_size, pin_memory=False)
     elif isinstance(dataset, Iterable):
         dataset = [T.tensor(a) for a in dataset]
-        return DataLoader(TensorDataset(*dataset), batch_size=batch_size, pin_memory=True)
+        return DataLoader(TensorDataset(*dataset), batch_size=batch_size, pin_memory=False)
     else:
         raise NotImplementedError
 
@@ -50,8 +51,8 @@ class Learner:
         for i, batch in pbar:
             if split == 'train':
                 opt.zero_grad()
-            input, target = _splitor(batch, self.n_target, device)
-            res = self.module(*input)
+            feature, target = _splitor(batch, self.n_target, device)
+            res = self.module(*feature)
             if self.n_target == 1:
                 res = (res,)
             loss = 0.

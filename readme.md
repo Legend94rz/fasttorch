@@ -1,3 +1,12 @@
+# Fast Torch
+
+A keras-like library for pytorch.
+Easy to use and more efficient.
+
+
+# Example code
+
+```python
 from fasttorch import EarlyStoppingCallback, ReduceLROnPlateauCallback, Learner, binary_accuracy_with_logits, TensorDataLoader
 from torch import nn
 import torch as T
@@ -25,3 +34,4 @@ if __name__ == "__main__":
           metrics=[(0, 'acc', binary_accuracy_with_logits)],
           callbacks=[EarlyStoppingCallback(verbose=True), ReduceLROnPlateauCallback(verbose=True)],
           validation_set=(X[40000:], y[40000:]), verbose=True)
+```
