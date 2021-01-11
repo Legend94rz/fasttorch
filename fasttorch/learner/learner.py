@@ -7,20 +7,6 @@ import numpy as np
 from collections import defaultdict
 import pandas as pd
 from ..callbacks import CallbackList
-from ..my_loader import AsynchronousLoader
-
-
-def _fill(it, n, device):
-    q = []
-    is_finish = False
-    for i in range(n):
-        try:
-            i, batch = next(it)
-        except StopIteration:
-            is_finish = True
-            break
-        q.append((i, (c.to(device, non_blocking=True) for c in batch)))
-    return q, is_finish
 
 
 def _splitor(batch, n_target, device):
@@ -49,7 +35,7 @@ class Learner:
         self.module = module
         self.stop_training = False
 
-    def _walk_through_data(self, split, cur_epoch, total_epochs, opt, loss_fn, metrics, prefetch_batches, device, verbose):
+    def _walk_through_data(self, split, cur_epoch, total_epochs, opt, loss_fn, metrics, device, verbose):
         assert (split in ('train', 'val'))
         log_prefix = '' if split == 'train' else 'val_'
         dataloader = self.train_ld if split == 'train' else self.val_ld
@@ -89,7 +75,7 @@ class Learner:
             pbar.set_description(description)
         return running_loss, running_mean
 
-    def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn, metrics=None, validation_set=None, callbacks=None, device='cpu', prefetch_batches=8, verbose=True):
+    def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn, metrics=None, validation_set=None, callbacks=None, device='cpu', verbose=True):
         """
         training_set: (x1, x2, ..., y1, y2, ...), torch Dataset or DataLoader
         batch_size: ignored when training_set is `DataLoader` instance.T
@@ -113,8 +99,8 @@ class Learner:
         callbacks.set_model(self)
         callbacks.set_params({'optimizer': opt})
 
-        self.train_ld = AsynchronousLoader(_make_dataloader(training_set, batch_size), device, prefetch_batches)
-        self.val_ld = AsynchronousLoader(_make_dataloader(validation_set, batch_size), device, prefetch_batches)
+        self.train_ld = _make_dataloader(training_set, batch_size)
+        self.val_ld = _make_dataloader(validation_set, batch_size)
         self.n_target = len(loss_fn)
         training_logging = []
         validation_logging = []
@@ -122,10 +108,10 @@ class Learner:
         for e in range(epochs):
             if self.stop_training:
                 break
-            running_loss, running_mean = self._walk_through_data('train', e, epochs, opt, loss_fn, metrics, prefetch_batches, device, verbose)
+            running_loss, running_mean = self._walk_through_data('train', e, epochs, opt, loss_fn, metrics, device, verbose)
             training_logging.append({**{'epoch': e, 'loss': running_loss}, **running_mean})
             if validation_set is not None:
-                running_loss, running_mean = self._walk_through_data('val', e, epochs, None, loss_fn, metrics, prefetch_batches, device, verbose)
+                running_loss, running_mean = self._walk_through_data('val', e, epochs, None, loss_fn, metrics, device, verbose)
                 validation_logging.append({**{'epoch': e, 'val_loss': running_loss}, **running_mean})
             callbacks.on_epoch_end(training_logging, validation_logging)
         callbacks.on_train_end(training_logging, validation_logging)

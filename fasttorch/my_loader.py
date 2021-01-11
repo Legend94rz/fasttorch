@@ -21,7 +21,6 @@ def _worker_main(args):
 class AsynchronousLoader:
     def __init__(self, dataloader, device, q_size=10):
         self.dataloader = dataloader
-        #self.it = iter(self.dataloader)
         self.device = device
         self.q_size = q_size
         self.inq = Queue()
