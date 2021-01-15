@@ -106,6 +106,7 @@ class Learner:
         training_logging = []
         validation_logging = []
         self.module.to(device)
+        self.stop_training = False
         for e in range(epochs):
             if self.stop_training:
                 break

@@ -6,7 +6,7 @@ class TensorDataLoader:
         assert all(t.shape[0] == tensors[0].shape[0] for t in tensors)
         self.dataset_len = tensors[0].shape[0]
 
-        self.tensors = tensors
+        self.tensors = [T.tensor(t) for t in tensors]
         self.batch_size = batch_size
         self.shuffle = shuffle
         # Calculate # batches
@@ -19,6 +19,7 @@ class TensorDataLoader:
         if self.shuffle:
             r = T.randperm(self.dataset_len)
             self.tensors = [t[r] for t in self.tensors]
+            del r
         self.i = 0
         return self
 

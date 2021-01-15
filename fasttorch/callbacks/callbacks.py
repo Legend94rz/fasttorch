@@ -80,6 +80,8 @@ class EarlyStoppingCallback(BaseCallback):
         if self.monitor_op(cur_log[self.monitor], self.best):
             self.best = cur_log[self.monitor]
             self.epoch = len(training_log)
+            if self.best_model:
+                del self.best_model
             self.best_model = self.learner.module.state_dict()
         else:
             if len(training_log) - self.epoch > self.patience:

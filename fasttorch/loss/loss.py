@@ -3,6 +3,10 @@ from torch.nn import functional as F
 
 
 class LabelSmoothLoss(nn.Module):
+    """
+    input: logits. (N, *, C)
+    target: one-hot. (N, *, C)
+    """
     def __init__(self, smoothing=0.0):
         super(LabelSmoothLoss, self).__init__()
         self.smoothing = smoothing
