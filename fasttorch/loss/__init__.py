@@ -1,1 +1,1 @@
-from .loss import LabelSmoothLoss
+from .loss import LabelSmoothLoss, BinaryLabelSmoothLoss

@@ -1,4 +1,4 @@
-from fasttorch import EarlyStoppingCallback, ReduceLROnPlateauCallback, Learner, binary_accuracy_with_logits, TensorDataLoader, AdaBelief
+from fasttorch import *
 from torch import nn
 import torch as T
 import numpy as np
@@ -21,7 +21,8 @@ if __name__ == "__main__":
 
     # fast torch:
     m = Learner(SimpleMLP())
-    m.fit(TensorDataLoader(X[:400000], y[:400000], batch_size=4096, shuffle=True), 1000, None, AdaBelief, T.nn.functional.binary_cross_entropy_with_logits,
+    m.fit(TensorDataLoader(X[:400000], y[:400000], batch_size=4096, shuffle=True), 1000, None, AdaBelief,
+          BinaryLabelSmoothLoss(0.05),
           metrics=[(0, 'acc', binary_accuracy_with_logits)],
           callbacks=[EarlyStoppingCallback(verbose=True, patience=7), ReduceLROnPlateauCallback(verbose=True)],
           validation_set=TensorDataLoader(X[400000:], y[400000:], batch_size=4096), verbose=True)
