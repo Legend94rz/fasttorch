@@ -1,1 +1,1 @@
-from .callbacks import CallbackList, EarlyStoppingCallback, ReduceLROnPlateauCallback, ModelCheckpoint
+from .callbacks import CallbackList, EarlyStoppingCallback, ReduceLROnPlateauCallback, ModelCheckpoint, BaseCallback

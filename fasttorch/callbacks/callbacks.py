@@ -13,7 +13,13 @@ class BaseCallback:
     def set_params(self, params):
         self.params = params
 
+    def on_epoch_begin(self, training_log, validation_log):
+        pass
+
     def on_epoch_end(self, training_log, validation_log):
+        pass
+
+    def on_train_begin(self):
         pass
 
     def on_train_end(self, training_log, validation_log):
@@ -33,9 +39,17 @@ class CallbackList(BaseCallback):
         for cbk in self.callbacks:
             cbk.set_params(params)
 
+    def on_epoch_begin(self, training_log, validation_log):
+        for cbk in self.callbacks:
+            cbk.on_epoch_begin(training_log, validation_log)
+
     def on_epoch_end(self, training_log, validation_log):
         for cbk in self.callbacks:
             cbk.on_epoch_end(training_log, validation_log)
+
+    def on_train_begin(self):
+        for cbk in self.callbacks:
+            cbk.on_train_begin()
 
     def on_train_end(self, training_log, validation_log):
         for cbk in self.callbacks:

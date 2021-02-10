@@ -10,11 +10,6 @@ from ..data.tensor_dataloader import TensorDataLoader
 from ..callbacks import CallbackList
 
 
-def _splitor(batch, n_target, device):
-    batch = [c.to(device, non_blocking=True) for c in batch]
-    return batch[:-n_target], batch[-n_target:]
-
-
 def _make_dataloader(dataset, batch_size):
     if dataset is None:
         return None
@@ -31,10 +26,21 @@ def _make_dataloader(dataset, batch_size):
         raise NotImplementedError
 
 
+class LambdaLayer(T.nn.Module):
+    def __init__(self, func):
+        super(LambdaLayer, self).__init__()
+        self.func = func
+
+    def forward(self, x):
+        return self.lambd(x)
+
+
 class Learner:
     def __init__(self, module):
         self.module = module
         self.stop_training = False
+        self.train_ld = self.val_ld = None
+        self.nloss = None
 
     def _walk_through_data(self, split, cur_epoch, total_epochs, opt, loss_fn, metrics, device, verbose):
         assert (split in ('train', 'val'))
@@ -51,13 +57,11 @@ class Learner:
         for i, batch in pbar:
             if split == 'train':
                 opt.zero_grad()
-            feature, target = _splitor(batch, self.n_target, device)
-            res = self.module(*feature)
-            if self.n_target == 1:
-                res = (res,)
-            loss = 0.
-            for j in range(self.n_target):
-                loss += loss_fn[j](res[j], target[j])
+            batch = [c.to(device, non_blocking=True) for c in batch]
+            res = self.forward(batch)
+            if self.nloss == 1:
+                res = (res, )
+            loss = self.compute_loss(loss_fn, res, batch)
             running_loss = (running_loss * i + float(loss)) / (1 + i)
             if split == 'train':
                 loss.backward()
@@ -67,7 +71,7 @@ class Learner:
                 for j in range(len(metrics)):
                     k = metrics[j][0]
                     mn = log_prefix + metrics[j][1]
-                    running_mean[mn] = (running_mean[mn] * i + metrics[j][2](res[k].detach(), target[k])) / (1 + i)
+                    running_mean[mn] = (running_mean[mn] * i + self.compute_metric(k, metrics[j][2], res, batch)) / (1 + i)
                     metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
                 metrics_output = ', ' + ', '.join(metrics_output)
             else:
@@ -76,13 +80,32 @@ class Learner:
             pbar.set_description(description)
         return running_loss, running_mean
 
+    def forward(self, batch_data):
+        return self.module(*batch_data[:-self.nloss])
+
+    def compute_loss(self, loss_fns, forward_result, batch_data):
+        """
+        :param loss_fns: equals to `loss_fn` in `fit` params
+        :param forward_result: iterable. the output of model forward. single output will be wrap to a tuple with len==1.
+               if single object with multi-forward-output, use `forward_result[j]` to get j-th output component.
+        :param batch_data: the output of data_loader's one iter step.
+        :return: loss
+        """
+        target = batch_data[-self.nloss:]
+        loss = sum(loss_fns[j](forward_result[j], target[j]) for j in range(self.nloss))
+        return loss
+
+    def compute_metric(self, idx, func, forward_result, batch_data):
+        target = batch_data[-self.nloss:]
+        return func(forward_result[idx].detach(), target[idx])
+
     def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn, metrics=None, validation_set=None, callbacks=None, device='cpu', verbose=True):
         """
         training_set: (x1, x2, ..., y1, y2, ...), torch Dataset or DataLoader
-        batch_size: ignored when training_set is `DataLoader` instance.T
+        batch_size: ignored when training_set is `DataLoader` instance.
         optimizer_fn: callable or optim instance
         loss_fn: callable (including loss instance) or list of these two type for multi target.
-                if loss_fn is a list, the last `len(loss_fn)` components of training_set will be considered as labels respectivelly.
+                if loss_fn is a list, the last `len(loss_fn)` components of training_set will be considered as labels respectively.
                 besides, `len(loss_fn)` must equal to the number of the module output. and the final loss is simply sumed.
         metrics: None or list of (output index, 'name', callable)
         callbacks: list of `Callback`
@@ -95,6 +118,7 @@ class Learner:
         # todo: loss_fn is [callable] or [Loss instance]
         if not isinstance(loss_fn, Iterable):
             loss_fn = [loss_fn]
+        assert all(callable(x) for x in loss_fn)
         callbacks = [] if callbacks is None else callbacks
         callbacks = CallbackList(callbacks)
         callbacks.set_model(self)
@@ -102,14 +126,16 @@ class Learner:
 
         self.train_ld = _make_dataloader(training_set, batch_size)
         self.val_ld = _make_dataloader(validation_set, batch_size)
-        self.n_target = len(loss_fn)
+        self.nloss = len(loss_fn)
         training_logging = []
         validation_logging = []
         self.module.to(device)
         self.stop_training = False
+        callbacks.on_train_begin()
         for e in range(epochs):
             if self.stop_training:
                 break
+            callbacks.on_epoch_begin(training_logging, validation_logging)
             running_loss, running_mean = self._walk_through_data('train', e, epochs, opt, loss_fn, metrics, device, verbose)
             training_logging.append({**{'epoch': e, 'loss': running_loss}, **running_mean})
             if validation_set is not None:
