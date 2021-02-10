@@ -4,6 +4,19 @@ A keras-like library for pytorch.
 Easy to use and more efficient.
 
 
+# Setup
+
+setup by `setup.py`:
+
+`python setup.py install`
+
+or, you can build a `*.whl` package and then install it by `pip`:
+
+```
+python setup.py bdist_wheel
+pip install -U (the-whl-file-name-generated-just-now).whl
+```
+
 # Example code
 
 ```python
