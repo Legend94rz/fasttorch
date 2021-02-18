@@ -51,7 +51,7 @@ class Learner:
         else:
             self.module.eval()
 
-        running_mean = defaultdict(float) if metrics else None
+        running_mean = defaultdict(float)
         running_loss = .0
         pbar = tqdm(enumerate(dataloader), total=len(dataloader), file=sys.stdout, disable=not verbose)
         for i, batch in pbar:
@@ -66,7 +66,7 @@ class Learner:
             if split == 'train':
                 loss.backward()
                 opt.step()
-            if running_mean is not None:
+            if metrics:
                 metrics_output = []
                 for j in range(len(metrics)):
                     k = metrics[j][0]
@@ -87,7 +87,8 @@ class Learner:
         """
         :param loss_fns: equals to `loss_fn` in `fit` params
         :param forward_result: iterable. the output of model forward. single output will be wrap to a tuple with len==1.
-               if single object with multi-forward-output, use `forward_result[j]` to get j-th output component.
+               if the model only has one objective function while requires multi forward outputs as input,
+               use `forward_result[j]` to get j-th forward output component.
         :param batch_data: the output of data_loader's one iter step.
         :return: loss
         """
