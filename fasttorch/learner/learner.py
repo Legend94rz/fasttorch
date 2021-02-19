@@ -5,6 +5,7 @@ import sys
 from typing import Iterable
 import numpy as np
 from collections import defaultdict
+from torch.utils.data.distributed import DistributedSampler
 import pandas as pd
 from ..data.tensor_dataloader import TensorDataLoader
 from ..callbacks import CallbackList
@@ -40,9 +41,11 @@ class Learner:
         self.module = module
         self.stop_training = False
         self.train_ld = self.val_ld = None
-        self.nloss = None
+        self.nloss = self.opt = self.callbacks = None
+        self.validation_logging = []
+        self.training_logging = []
 
-    def _walk_through_data(self, split, cur_epoch, total_epochs, opt, loss_fn, metrics, device, verbose):
+    def _walk_through_data(self, split, cur_epoch, total_epochs, loss_fn, metrics, device, verbose):
         assert (split in ('train', 'val'))
         log_prefix = '' if split == 'train' else 'val_'
         dataloader = self.train_ld if split == 'train' else self.val_ld
@@ -53,11 +56,14 @@ class Learner:
 
         running_mean = defaultdict(float)
         running_loss = .0
+        if hasattr(dataloader, 'sampler') and isinstance(dataloader.sampler, DistributedSampler):
+            dataloader.sampler.set_epoch(cur_epoch)
         pbar = tqdm(enumerate(dataloader), total=len(dataloader), file=sys.stdout, disable=not verbose)
         for i, batch in pbar:
             if split == 'train':
-                opt.zero_grad()
+                self.opt.zero_grad()
             batch = [c.to(device, non_blocking=True) for c in batch]
+            self.callbacks.on_batch_begin(i, batch, self.training_logging, self.validation_logging)
             res = self.forward(batch)
             if self.nloss == 1:
                 res = (res, )
@@ -65,7 +71,7 @@ class Learner:
             running_loss = (running_loss * i + float(loss)) / (1 + i)
             if split == 'train':
                 loss.backward()
-                opt.step()
+                self.opt.step()
             if metrics:
                 metrics_output = []
                 for j in range(len(metrics)):
@@ -112,39 +118,39 @@ class Learner:
         callbacks: list of `Callback`
         """
         if callable(optimizer_fn):
-            opt = optimizer_fn(self.module.parameters())    # other parameters could be passed by `partial`
+            self.opt = optimizer_fn(self.module.parameters())    # other parameters could be passed by `partial`
         else:
             assert isinstance(optimizer_fn, T.optim.Optimizer)
-            opt = optimizer_fn
+            self.opt = optimizer_fn
         # todo: loss_fn is [callable] or [Loss instance]
         if not isinstance(loss_fn, Iterable):
             loss_fn = [loss_fn]
         assert all(callable(x) for x in loss_fn)
         callbacks = [] if callbacks is None else callbacks
-        callbacks = CallbackList(callbacks)
-        callbacks.set_model(self)
-        callbacks.set_params({'optimizer': opt})
+        self.callbacks = CallbackList(callbacks)
+        self.callbacks.set_model(self)
+        self.callbacks.set_params({'optimizer': self.opt})
 
         self.train_ld = _make_dataloader(training_set, batch_size)
         self.val_ld = _make_dataloader(validation_set, batch_size)
         self.nloss = len(loss_fn)
-        training_logging = []
-        validation_logging = []
         self.module.to(device)
         self.stop_training = False
-        callbacks.on_train_begin()
+        self.training_logging = []
+        self.validation_logging = []
+        self.callbacks.on_train_begin()
         for e in range(epochs):
             if self.stop_training:
                 break
-            callbacks.on_epoch_begin(training_logging, validation_logging)
-            running_loss, running_mean = self._walk_through_data('train', e, epochs, opt, loss_fn, metrics, device, verbose)
-            training_logging.append({**{'epoch': e, 'loss': running_loss}, **running_mean})
+            self.callbacks.on_epoch_begin(self.training_logging, self.validation_logging)
+            running_loss, running_mean = self._walk_through_data('train', e, epochs, loss_fn, metrics, device, verbose)
+            self.training_logging.append({**{'epoch': e, 'loss': running_loss}, **running_mean})
             if validation_set is not None:
-                running_loss, running_mean = self._walk_through_data('val', e, epochs, None, loss_fn, metrics, device, verbose)
-                validation_logging.append({**{'epoch': e, 'val_loss': running_loss}, **running_mean})
-            callbacks.on_epoch_end(training_logging, validation_logging)
-        callbacks.on_train_end(training_logging, validation_logging)
-        return pd.DataFrame.from_records(training_logging), pd.DataFrame.from_records(validation_logging)
+                running_loss, running_mean = self._walk_through_data('val', e, epochs, loss_fn, metrics, device, verbose)
+                self.validation_logging.append({**{'epoch': e, 'val_loss': running_loss}, **running_mean})
+            self.callbacks.on_epoch_end(self.training_logging, self.validation_logging)
+        self.callbacks.on_train_end(self.training_logging, self.validation_logging)
+        return pd.DataFrame.from_records(self.training_logging), pd.DataFrame.from_records(self.validation_logging)
     
     def predict(self, X, batch_size, device='cpu'):
         dl = _make_dataloader(X, batch_size)

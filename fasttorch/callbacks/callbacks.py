@@ -4,14 +4,19 @@ from functools import partial
 import warnings
 import numpy as np
 from pathlib import Path
+from typing import Dict
 
 
 class BaseCallback:
+    def __init__(self):
+        self.learner = None
+        self.params = {}
+
     def set_model(self, learner):
         self.learner = learner
 
-    def set_params(self, params):
-        self.params = params
+    def set_params(self, params: Dict):
+        self.params.update(params)
 
     def on_epoch_begin(self, training_log, validation_log):
         pass
@@ -25,9 +30,16 @@ class BaseCallback:
     def on_train_end(self, training_log, validation_log):
         pass
 
+    def on_batch_begin(self, idx, batch_data, training_log, validation_log):
+        pass
+
+    def on_batch_end(self, idx, batch_data, training_log, validation_log):
+        pass
+
 
 class CallbackList(BaseCallback):
     def __init__(self, callbacks):
+        super().__init__()
         assert isinstance(callbacks, Iterable)
         self.callbacks = callbacks
 
@@ -55,10 +67,19 @@ class CallbackList(BaseCallback):
         for cbk in self.callbacks:
             cbk.on_train_end(training_log, validation_log)
 
+    def on_batch_begin(self, idx, batch_data, training_log, validation_log):
+        for cbk in self.callbacks:
+            cbk.on_batch_begin(idx, batch_data, training_log, validation_log)
+
+    def on_batch_end(self, idx, batch_data, training_log, validation_log):
+        for cbk in self.callbacks:
+            cbk.on_batch_end(idx, batch_data, training_log, validation_log)
+
 
 class ReduceLROnPlateauCallback(BaseCallback):
-    def __init__(self, monitor='val_loss', mode='min', factor=0.1, patience=10,
-                 verbose=False, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-8):
+    def __init__(self, monitor='val_loss', mode='min', factor=0.1, patience=10, verbose=False, threshold=1e-4,
+                 threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-8):
+        super().__init__()
         self.monitor = monitor
         self.__schdule_fn = partial(ReduceLROnPlateau, mode=mode, factor=factor, patience=patience,
                  verbose=verbose, threshold=threshold, threshold_mode=threshold_mode,
@@ -75,6 +96,7 @@ class ReduceLROnPlateauCallback(BaseCallback):
 
 class EarlyStoppingCallback(BaseCallback):
     def __init__(self, monitor='val_loss', patience=1, mode='min', verbose=False, restore_best_weights=True):
+        super().__init__()
         self.monitor = monitor
         self.patience = patience
         self.mode = mode
