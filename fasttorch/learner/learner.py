@@ -1,14 +1,16 @@
-import torch as T
+from collections import defaultdict
+from torch import distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Dataset, TensorDataset
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
-import sys
 from typing import Iterable
 import numpy as np
-from collections import defaultdict
-from torch.utils.data.distributed import DistributedSampler
 import pandas as pd
-from ..data.tensor_dataloader import TensorDataLoader
+import sys
+import torch as T
 from ..callbacks import CallbackList
+from ..data.tensor_dataloader import TensorDataLoader
 
 
 def _make_dataloader(dataset, batch_size):
@@ -33,12 +35,31 @@ class LambdaLayer(T.nn.Module):
         self.func = func
 
     def forward(self, x):
-        return self.lambd(x)
+        return self.func(x)
 
 
 class Learner:
+    __LOCAL_RANK = None
+
+    @staticmethod
+    def init_distributed_training(dummy=False):
+        if not dummy:
+            if Learner.__LOCAL_RANK is None:
+                import os
+                from torch import distributed as dist
+                local_rank = int(os.environ['LOCAL_RANK'])
+                T.cuda.set_device(local_rank)
+                dist.init_process_group(backend='nccl', init_method='env://')
+                Learner.__LOCAL_RANK = local_rank
+            return Learner.__LOCAL_RANK
+        else:
+            return 0
+
     def __init__(self, module):
-        self.module = module
+        if Learner.__LOCAL_RANK is None or isinstance(module, DistributedDataParallel):
+            self.module = module
+        else:
+            self.module = DistributedDataParallel(module, output_device=Learner.__LOCAL_RANK, device_ids=[Learner.__LOCAL_RANK])
         self.stop_training = False
         self.train_ld = self.val_ld = None
         self.nloss = self.opt = self.callbacks = None
@@ -157,20 +178,29 @@ class Learner:
         output = []
         self.module.eval()
         with T.no_grad():
+            # todo: distributed prediction?
+            if isinstance(self.module, DistributedDataParallel):
+                tmp = self.module
+                self.module = self.module.module
             for i, batch in enumerate(dl):
-                input = [c.to(device, non_blocking=True) for c in batch]
-                res = self.module(*input)
-                if not isinstance(res, tuple):
+                batch = [c.to(device, non_blocking=True) for c in batch]
+                res = self.forward(batch)
+                if self.nloss == 1:
                     res = (res, )
                 res = (c.cpu().numpy() for c in res)
                 output.append(res)
+            if isinstance(self.module, DistributedDataParallel):
+                self.module = tmp
         tmp = tuple(map(np.concatenate, zip(*output)))
         if len(tmp) == 1:
             return tmp[0]
         return tmp
 
     def save(self, fname):
-        T.save(self.module.state_dict(), fname)
+        if Learner.__LOCAL_RANK is None or Learner.__LOCAL_RANK == 0:
+            T.save(self.module.state_dict(), fname)
+            if Learner.__LOCAL_RANK == 0:
+                dist.barrier()
 
     def load(self, fname, device):
         self.module.load_state_dict(T.load(fname, map_location=device))

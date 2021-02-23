@@ -1,10 +1,10 @@
-from typing import Iterable
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from functools import partial
-import warnings
-import numpy as np
 from pathlib import Path
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Dict
+from typing import Iterable
+import numpy as np
+import warnings
 
 
 class BaseCallback:
@@ -140,7 +140,8 @@ class ModelCheckpoint(BaseCallback):
     then the model checkpoints will be saved with the epoch number and
     the validation loss in the filename.
     # Arguments
-        filepath: string, path to save the model file.
+        filepath: string, path to save the model file. could include format placeholders passwd by log.
+                  e.g. model_{epoch}_{val_loss}.pt
         monitor: quantity to monitor.
         verbose: verbosity mode, bool.
         save_best_only: if `save_best_only=True`,

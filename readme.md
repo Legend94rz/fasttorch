@@ -36,6 +36,11 @@ class SimpleMLP(nn.Module):
 
 
 if __name__ == "__main__":
+    ## uncomment this line to initialize the distributed process group
+    ## the script must be launched by `python -m torch.distributed.launch` tool.
+    ## remember set the `sampler` parameter of `DataLoader` properly. 
+    # local_rank = Learner.init_distributed_training()
+    
     # generate some data
     X = np.random.randn(50000, 100).astype('float32')
     X[:, 0] = np.random.randint(0, 2, (50000, )).astype('float32')

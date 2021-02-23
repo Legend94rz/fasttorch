@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 
 setup(
     name='Fasttorch',
-    version='1.0.4',
+    version='1.0.5',
     author="Legend",
     description="A keras-like library for pytorch.",
     packages=find_packages(),
