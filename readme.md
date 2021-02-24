@@ -83,14 +83,14 @@ users should ensure only the process whose local rank (or rank in global) equals
           validation_set=val_loader, verbose=True)
     ```
 
-2. The params `training_set` and `validation_set` in the `fit` function only support offical `DataLoader` instance now.
+2. Under distributed training scenario, the params `training_set` and `validation_set` in the `fit` function only support offical `DataLoader` instance now.
 Ensure they have set `sampler` properly.
 Users needn't call `sampler.set_epoch` at every epoch beginning, FastTorch will do that for you.
 
 
 ## For more complex module
 
-Overwrite `Learner.forward`, `Learner.compute_loss`, and `compute_metric` respectively
+Overwrite `Learner.forward`, `Learner.compute_loss`, and `Learner.compute_metric` respectively
 to custom the data flow.
 
 
