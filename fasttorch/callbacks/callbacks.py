@@ -183,10 +183,10 @@ class ModelCheckpoint(BaseCallback):
                         if self.verbose:
                             print(f'Epoch {epoch:05d}: {self.monitor} improved from {self.best:0.5f} to {current:0.5f}, saving model to {filepath}')
                         self.best = current
-                        if self.last_save_file is not None and Path(self.last_save_file).exists():
-                            Path(self.last_save_file).unlink()
+                        if self.last_save_file is not None and self.last_save_file.exists():
+                            self.last_save_file.unlink()
                         self.learner.save(filepath)
-                        self.last_save_file = filepath
+                        self.last_save_file = Path(filepath)
                     else:
                         if self.verbose:
                             print(f'Epoch {epoch:05d}: {self.monitor} did not improve')
@@ -194,4 +194,4 @@ class ModelCheckpoint(BaseCallback):
                 if self.verbose:
                     print(f'Epoch {epoch:05d}: saving model to {filepath}')
                 self.learner.save(filepath)
-                self.last_save_file = filepath
+                self.last_save_file = Path(filepath)

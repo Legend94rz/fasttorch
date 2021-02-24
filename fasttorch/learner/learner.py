@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import sys
 import torch as T
+from pathlib import Path
 from ..callbacks import CallbackList
 from ..data.tensor_dataloader import TensorDataLoader
 
@@ -105,6 +106,7 @@ class Learner:
                 metrics_output = ''
             description = f'Epoch [{cur_epoch}/{total_epochs}]: {log_prefix}loss={running_loss:.5f}' + metrics_output
             pbar.set_description(description)
+            self.callbacks.on_batch_end(i, batch, self.training_logging, self.validation_logging)
         return running_loss, running_mean
 
     def forward(self, batch_data):
@@ -197,10 +199,9 @@ class Learner:
         return tmp
 
     def save(self, fname):
-        if Learner.__LOCAL_RANK is None or Learner.__LOCAL_RANK == 0:
-            T.save(self.module.state_dict(), fname)
-            if Learner.__LOCAL_RANK == 0:
-                dist.barrier()
+        p = Path(fname)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        T.save(self.module.state_dict(), fname)
 
     def load(self, fname, device):
         self.module.load_state_dict(T.load(fname, map_location=device))

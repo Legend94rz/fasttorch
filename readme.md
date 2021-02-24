@@ -6,16 +6,21 @@ Easy to use and more efficient.
 
 # Setup
 
-setup by `setup.py`:
+1. clone this repo:
 
-`python setup.py install`
+    `git clone https://github.com/Legend94rz/fasttorch`
 
-or, you can build a `*.whl` package and then install it by `pip`:
 
-```
-python setup.py bdist_wheel
-pip install -U (the-whl-file-name-generated-just-now).whl
-```
+2. setup by `setup.py`:
+
+    `python setup.py install`
+
+    or, you can build a `*.whl` package and then install it by `pip`:
+
+    ```
+    python setup.py bdist_wheel
+    pip install -U (the-whl-file-name-generated-just-now).whl
+    ```
 
 # Example code
 
@@ -36,11 +41,6 @@ class SimpleMLP(nn.Module):
 
 
 if __name__ == "__main__":
-    ## uncomment this line to initialize the distributed process group
-    ## the script must be launched by `python -m torch.distributed.launch` tool.
-    ## remember set the `sampler` parameter of `DataLoader` properly. 
-    # local_rank = Learner.init_distributed_training()
-    
     # generate some data
     X = np.random.randn(50000, 100).astype('float32')
     X[:, 0] = np.random.randint(0, 2, (50000, )).astype('float32')
@@ -53,3 +53,38 @@ if __name__ == "__main__":
           callbacks=[EarlyStoppingCallback(verbose=True), ReduceLROnPlateauCallback(verbose=True)],
           validation_set=(X[40000:], y[40000:]), verbose=True)
 ```
+
+
+## About distributed training
+
+Firstly, the following line should be added before the initializing of learner (and the datasets):
+
+`local_rank = Learner.init_distributed_training(dummy=False)`
+
+the `dummy` param is used to debug. If user want to disable parallel temporarily, set `dummy=True`.
+This function will return the `LOCAL_RANK` mentioned by `torch.distributed.launch` tool.
+
+Then start parallel training with the help of the tool `torch.distributed.launch` offered by pytorch:
+
+`python -m torch.distributed.launch [your script].py`
+
+NOTE:
+1. When using `ModelCheckpoint`, 
+users should ensure only the process whose local rank (or rank in global) equals to 0 saves the checkpoint.
+
+    For example:
+    ```
+    m.fit(train_loder, 100, 256, T.optim.Adam, T.nn.functional.binary_cross_entropy_with_logits,
+          metrics=[(0, 'acc', binary_accuracy_with_logits)],
+          callbacks=[ModelCheckpoint('nextshot_{epoch}_{val_acc}.pt', save_best_only=True, verbose=True)] if local_rank==0 else None,
+          validation_set=val_loader, verbose=True)
+    ```
+
+2. The params `training_set` and `validation_set` in the `fix` function only support offical `DataLoader` instance now.
+Ensure they have set `sampler` properly.
+Users needn't call `sampler.set_epoch` at every epoch beginning, FastTorch will do that for you.
+
+# Reference
+
+[1] [torch.distributed.launch.py](https://github.com/pytorch/pytorch/blob/master/torch/distributed/launch.py) and [its tutorial](https://pytorch.org/docs/stable/distributed.html#launch-utility)
+
