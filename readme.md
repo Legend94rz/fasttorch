@@ -2,6 +2,8 @@
 
 A keras-like library for pytorch.
 Easy to use and more efficient.
+With the help of FastTorch, the only thing you should do is to define a `nn.Module`, 
+write the `forward`, and call `Learner(module).fit()`. 
 
 
 # Setup
@@ -22,7 +24,8 @@ Easy to use and more efficient.
     pip install -U (the-whl-file-name-generated-just-now).whl
     ```
 
-# Example code
+# Tutorial
+## Example code
 
 ```python
 from fasttorch import EarlyStoppingCallback, ReduceLROnPlateauCallback, Learner, binary_accuracy_with_logits, TensorDataLoader
@@ -30,7 +33,7 @@ from torch import nn
 import torch as T
 import numpy as np
 
-
+# Define your model:
 class SimpleMLP(nn.Module):
     def __init__(self):
         nn.Module.__init__(self)
@@ -80,9 +83,17 @@ users should ensure only the process whose local rank (or rank in global) equals
           validation_set=val_loader, verbose=True)
     ```
 
-2. The params `training_set` and `validation_set` in the `fix` function only support offical `DataLoader` instance now.
+2. The params `training_set` and `validation_set` in the `fit` function only support offical `DataLoader` instance now.
 Ensure they have set `sampler` properly.
 Users needn't call `sampler.set_epoch` at every epoch beginning, FastTorch will do that for you.
+
+
+## For more complex module
+
+Overwrite `Learner.forward`, `Learner.compute_loss`, and `compute_metric` respectively
+to custom the data flow.
+
+
 
 # Reference
 
