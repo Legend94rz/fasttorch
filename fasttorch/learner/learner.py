@@ -9,8 +9,10 @@ import pandas as pd
 import sys
 import torch as T
 from pathlib import Path
+from enum import Flag
 from ..callbacks import CallbackList
 from ..data.tensor_dataloader import TensorDataLoader
+from ..misc.seed import seed_everything
 
 
 def _make_dataloader(dataset, batch_size):
@@ -41,14 +43,19 @@ class LambdaLayer(T.nn.Module):
 class Learner:
     __LOCAL_RANK = None
 
+    class Stage(Flag):
+        TRAIN = 1
+        INFERENCE = 2
+
     @staticmethod
-    def init_distributed_training(dummy=False):
+    def init_distributed_training(dummy=False, seed=None):
         if not dummy:
             if Learner.__LOCAL_RANK is None:
                 import os
                 from torch import distributed as dist
                 local_rank = int(os.environ['LOCAL_RANK'])
                 T.cuda.set_device(local_rank)
+                seed_everything(seed)
                 dist.init_process_group(backend='nccl', init_method='env://')
                 Learner.__LOCAL_RANK = local_rank
             return Learner.__LOCAL_RANK
@@ -108,8 +115,10 @@ class Learner:
             pbar.set_description(description)
         return running_loss, running_mean
 
-    def compute_forward(self, batch_data):
-        return self.module(*batch_data[:-self.nloss])
+    def compute_forward(self, batch_data, stage=Stage.TRAIN):
+        if stage == Learner.Stage.TRAIN:
+            return self.module(*batch_data[:-self.nloss])
+        return self.module(*batch_data)
 
     def compute_losses(self, loss_fns, forward_results, batch_data):
         """
@@ -195,7 +204,7 @@ class Learner:
             self.module.to(device)
             for i, batch in enumerate(dl):
                 batch = [c.to(device, non_blocking=True) for c in batch]
-                res = self.compute_forward(batch)
+                res = self.compute_forward(batch, Learner.Stage.INFERENCE)
                 if not isinstance(res, tuple):
                     res = (res, )
                 res = self.compute_output(res, batch)
@@ -208,11 +217,17 @@ class Learner:
         return tmp
 
     def save(self, fname):
+        m = self.module
+        if isinstance(m, DistributedDataParallel):
+            m = m.module
         p = Path(fname)
         p.parent.mkdir(parents=True, exist_ok=True)
-        T.save(self.module.state_dict(), fname)
+        T.save(m.state_dict(), fname)
 
     def load(self, fname, device):
-        self.module.load_state_dict(T.load(fname, map_location=device))
-        self.module.to(device)
+        m = self.module
+        if isinstance(m, DistributedDataParallel):
+            m = m.module
+        m.load_state_dict(T.load(fname, map_location=device))
+        m.to(device)
         return self
