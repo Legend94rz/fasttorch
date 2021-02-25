@@ -10,19 +10,19 @@ write the `forward`, and call `Learner(module).fit()`.
 
 1. clone this repo:
 
-    `git clone https://github.com/Legend94rz/fasttorch`
+   `git clone https://github.com/Legend94rz/fasttorch`
 
 
 2. setup by `setup.py`:
 
-    `python setup.py install`
+   `python setup.py install`
 
-    or, you can build a `*.whl` package and then install it by `pip`:
+   or, you can build a `*.whl` package and then install it by `pip`:
 
-    ```
-    python setup.py bdist_wheel
-    pip install -U (the-whl-file-name-generated-just-now).whl
-    ```
+   ```
+   python setup.py bdist_wheel
+   pip install -U (the-whl-file-name-generated-just-now).whl
+   ```
 
 # Tutorial
 ## Example code
@@ -69,11 +69,14 @@ This function will return the `LOCAL_RANK` mentioned by `torch.distributed.launc
 
 Then start parallel training with the help of the tool `torch.distributed.launch` offered by pytorch:
 
-`python -m torch.distributed.launch [your script].py`
+`python -m torch.distributed.launch --use_env [your script and parameters]`
 
 NOTE:
+1. `--use_env` is required because FastTorch reads the `LOCAL_RANK` from `os.environ`, 
+   avoiding parses arguments from command line.
+
 1. When using `ModelCheckpoint`, 
-users should ensure only the process whose local rank (or rank in global) equals to 0 saves the checkpoint.
+   users should ensure only the process whose local rank (or rank in global) equals to 0 saves the checkpoint.
 
     For example:
     ```
@@ -83,14 +86,15 @@ users should ensure only the process whose local rank (or rank in global) equals
           validation_set=val_loader, verbose=True)
     ```
 
-2. Under distributed training scenario, the params `training_set` and `validation_set` in the `fit` function only support offical `DataLoader` instance now.
-Ensure they have set `sampler` properly.
-Users needn't call `sampler.set_epoch` at every epoch beginning, FastTorch will do that for you.
+2. Under distributed training scenario, the params `training_set` and `validation_set` in the `fit` function
+   only support offical `DataLoader` instance now. 
+   Ensure they have set `sampler` properly. 
+   Users needn't call `sampler.set_epoch` at every epoch beginning, FastTorch will do that for you.
 
 
 ## For more complex module
 
-Overwrite `Learner.forward`, `Learner.compute_loss`, and `Learner.compute_metric` respectively
+Overwrite `Learner.forward`, `Learner.compute_losses`, and `Learner.compute_metric` respectively
 to custom the data flow.
 
 

@@ -1,5 +1,4 @@
 from collections import defaultdict
-from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
@@ -60,7 +59,7 @@ class Learner:
         if Learner.__LOCAL_RANK is None or isinstance(module, DistributedDataParallel):
             self.module = module
         else:
-            self.module = DistributedDataParallel(module, output_device=Learner.__LOCAL_RANK, device_ids=[Learner.__LOCAL_RANK])
+            self.module = DistributedDataParallel(module.to('cuda'), device_ids=[Learner.__LOCAL_RANK])
         self.stop_training = False
         self.train_ld = self.val_ld = None
         self.nloss = self.opt = self.callbacks = None
@@ -82,63 +81,72 @@ class Learner:
             dataloader.sampler.set_epoch(cur_epoch)
         pbar = tqdm(enumerate(dataloader), total=len(dataloader), file=sys.stdout, disable=not verbose)
         for i, batch in pbar:
-            if split == 'train':
-                self.opt.zero_grad()
             batch = [c.to(device, non_blocking=True) for c in batch]
             self.callbacks.on_batch_begin(i, batch, self.training_logging, self.validation_logging)
-            res = self.forward(batch)
-            if self.nloss == 1:
+            if split == 'train':
+                self.opt.zero_grad()
+            res = self.compute_forward(batch)
+            if not isinstance(res, tuple):
                 res = (res, )
-            loss = self.compute_loss(loss_fn, res, batch)
-            running_loss = (running_loss * i + float(loss)) / (1 + i)
+            loss = self.compute_losses(loss_fn, res, batch)
             if split == 'train':
                 loss.backward()
                 self.opt.step()
             if metrics:
+                detached = tuple(x.detach() for x in res)
                 metrics_output = []
                 for j in range(len(metrics)):
-                    k = metrics[j][0]
                     mn = log_prefix + metrics[j][1]
-                    running_mean[mn] = (running_mean[mn] * i + self.compute_metric(k, metrics[j][2], res, batch)) / (1 + i)
+                    running_mean[mn] = (running_mean[mn] * i + self.compute_metric(*metrics[j], detached, batch)) / (1 + i)
                     metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
                 metrics_output = ', ' + ', '.join(metrics_output)
             else:
                 metrics_output = ''
+            self.callbacks.on_batch_end(i, batch, self.training_logging, self.validation_logging)
+            running_loss = (running_loss * i + float(loss)) / (1 + i)
             description = f'Epoch [{cur_epoch}/{total_epochs}]: {log_prefix}loss={running_loss:.5f}' + metrics_output
             pbar.set_description(description)
-            self.callbacks.on_batch_end(i, batch, self.training_logging, self.validation_logging)
         return running_loss, running_mean
 
-    def forward(self, batch_data):
+    def compute_forward(self, batch_data):
         return self.module(*batch_data[:-self.nloss])
 
-    def compute_loss(self, loss_fns, forward_result, batch_data):
+    def compute_losses(self, loss_fns, forward_results, batch_data):
         """
         :param loss_fns: equals to `loss_fn` in `fit` params
-        :param forward_result: iterable. the output of model forward. single output will be wrap to a tuple with len==1.
+        :param forward_results: tuple. the output of model forward. single output will be wrap to a tuple with len==1.
                if the model only has one objective function while requires multi forward outputs as input,
                use `forward_result[j]` to get j-th forward output component.
         :param batch_data: the output of data_loader's one iter step.
         :return: loss
         """
         target = batch_data[-self.nloss:]
-        loss = sum(loss_fns[j](forward_result[j], target[j]) for j in range(self.nloss))
+        loss = sum(loss_fns[j](forward_results[j], target[j]) for j in range(self.nloss))
         return loss
 
-    def compute_metric(self, idx, func, forward_result, batch_data):
+    def compute_metric(self, idx, name, func, detached_results, batch_data):
         target = batch_data[-self.nloss:]
-        return func(forward_result[idx].detach(), target[idx])
+        return func(detached_results[idx], target[idx])
 
-    def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn, metrics=None, validation_set=None, callbacks=None, device='cpu', verbose=True):
+    def compute_output(self, detached_results, batch_data):
+        return tuple(c.cpu().numpy() for c in detached_results)
+
+    def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn=None, metrics=None, validation_set=None, callbacks=None, device='cpu', verbose=True):
         """
-        training_set: (x1, x2, ..., y1, y2, ...), torch Dataset or DataLoader
-        batch_size: ignored when training_set is `DataLoader` instance.
-        optimizer_fn: callable or optim instance
-        loss_fn: callable (including loss instance) or list of these two type for multi target.
+        :param training_set: (x1, x2, ..., y1, y2, ...), torch Dataset or DataLoader
+        :param epochs: int.
+        :param batch_size: int. ignored when training_set is `DataLoader` instance.
+        :param optimizer_fn: callable or optim instance.
+        :param loss_fn: callable (including loss instance), list of these two type for multi target, or None.
                 if loss_fn is a list, the last `len(loss_fn)` components of training_set will be considered as labels respectively.
                 besides, `len(loss_fn)` must equal to the number of the module output. and the final loss is simply sumed.
-        metrics: None or list of (output index, 'name', callable)
-        callbacks: list of `Callback`
+                If `loss_fn` is None, you must override `compute_losses` function.
+        :param metrics: None or list of (output index, 'name', callable)
+        :param validation_set: the type is same as `training_set`. used for validation.
+        :param callbacks: list of `Callback`
+        :param device: string, int, or torch.device.
+        :param verbose: bool.
+        :return: tuple. DataFrame of training and validation log.
         """
         if callable(optimizer_fn):
             self.opt = optimizer_fn(self.module.parameters())    # other parameters could be passed by `partial`
@@ -184,12 +192,13 @@ class Learner:
             if isinstance(self.module, DistributedDataParallel):
                 tmp = self.module
                 self.module = self.module.module
+            self.module.to(device)
             for i, batch in enumerate(dl):
                 batch = [c.to(device, non_blocking=True) for c in batch]
-                res = self.forward(batch)
-                if self.nloss == 1:
+                res = self.compute_forward(batch)
+                if not isinstance(res, tuple):
                     res = (res, )
-                res = (c.cpu().numpy() for c in res)
+                res = self.compute_output(res, batch)
                 output.append(res)
             if isinstance(self.module, DistributedDataParallel):
                 self.module = tmp
