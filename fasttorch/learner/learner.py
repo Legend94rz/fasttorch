@@ -45,7 +45,8 @@ class Learner:
 
     class Stage(Flag):
         TRAIN = 1
-        INFERENCE = 2
+        VALIDATION = 2
+        INFERENCE = 3
 
     @staticmethod
     def init_distributed_training(dummy=False, seed=None):
@@ -73,14 +74,19 @@ class Learner:
         self.validation_logging = []
         self.training_logging = []
 
-    def _walk_through_data(self, split, cur_epoch, total_epochs, loss_fn, metrics, device, verbose):
-        assert (split in ('train', 'val'))
-        log_prefix = '' if split == 'train' else 'val_'
-        dataloader = self.train_ld if split == 'train' else self.val_ld
-        if split == 'train':
+    def _walk_through_data(self, stage, cur_epoch, total_epochs, loss_fn, metrics, device, verbose):
+        assert stage in (Learner.Stage.TRAIN, Learner.Stage.VALIDATION)
+        prev_grad_enabled = T.is_grad_enabled()
+        if stage == Learner.Stage.TRAIN:
             self.module.train()
+            log_prefix = ''
+            dataloader = self.train_ld
+            T.set_grad_enabled(True)
         else:
             self.module.eval()
+            log_prefix = 'val_'
+            dataloader = self.val_ld
+            T.set_grad_enabled(False)
 
         running_mean = defaultdict(float)
         running_loss = .0
@@ -90,13 +96,13 @@ class Learner:
         for i, batch in pbar:
             batch = [c.to(device, non_blocking=True) for c in batch]
             self.callbacks.on_batch_begin(i, batch, self.training_logging, self.validation_logging)
-            if split == 'train':
+            if stage == Learner.Stage.TRAIN:
                 self.opt.zero_grad()
             res = self.compute_forward(batch)
             if not isinstance(res, tuple):
                 res = (res, )
             loss = self.compute_losses(loss_fn, res, batch)
-            if split == 'train':
+            if stage == Learner.Stage.TRAIN:
                 loss.backward()
                 self.opt.step()
             if metrics:
@@ -113,6 +119,7 @@ class Learner:
             running_loss = (running_loss * i + float(loss)) / (1 + i)
             description = f'Epoch [{cur_epoch}/{total_epochs}]: {log_prefix}loss={running_loss:.5f}' + metrics_output
             pbar.set_description(description)
+        T.set_grad_enabled(prev_grad_enabled)
         return running_loss, running_mean
 
     def compute_forward(self, batch_data, stage=Stage.TRAIN):
@@ -183,33 +190,35 @@ class Learner:
             if self.stop_training:
                 break
             self.callbacks.on_epoch_begin(self.training_logging, self.validation_logging)
-            running_loss, running_mean = self._walk_through_data('train', e, epochs, loss_fn, metrics, device, verbose)
+            running_loss, running_mean = self._walk_through_data(Learner.Stage.TRAIN, e, epochs, loss_fn, metrics, device, verbose)
             self.training_logging.append({**{'epoch': e, 'loss': running_loss}, **running_mean})
             if validation_set is not None:
-                running_loss, running_mean = self._walk_through_data('val', e, epochs, loss_fn, metrics, device, verbose)
+                running_loss, running_mean = self._walk_through_data(Learner.Stage.VALIDATION, e, epochs, loss_fn, metrics, device, verbose)
                 self.validation_logging.append({**{'epoch': e, 'val_loss': running_loss}, **running_mean})
             self.callbacks.on_epoch_end(self.training_logging, self.validation_logging)
         self.callbacks.on_train_end(self.training_logging, self.validation_logging)
         return pd.DataFrame.from_records(self.training_logging), pd.DataFrame.from_records(self.validation_logging)
     
-    def predict(self, X, batch_size, device='cpu'):
+    def predict(self, X, batch_size, device='cpu', verbose=True):
         dl = _make_dataloader(X, batch_size)
         output = []
         self.module.eval()
         with T.no_grad():
             # todo: distributed prediction?
+            tmp = None
             if isinstance(self.module, DistributedDataParallel):
                 tmp = self.module
                 self.module = self.module.module
             self.module.to(device)
-            for i, batch in enumerate(dl):
+            pbar = tqdm(enumerate(dl), total=len(dl), disable=not verbose, file=sys.stdout)
+            for i, batch in pbar:
                 batch = [c.to(device, non_blocking=True) for c in batch]
                 res = self.compute_forward(batch, Learner.Stage.INFERENCE)
                 if not isinstance(res, tuple):
                     res = (res, )
                 res = self.compute_output(res, batch)
                 output.append(res)
-            if isinstance(self.module, DistributedDataParallel):
+            if tmp is not None:
                 self.module = tmp
         tmp = tuple(map(np.concatenate, zip(*output)))
         if len(tmp) == 1:

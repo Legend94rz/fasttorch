@@ -2,8 +2,8 @@
 
 A keras-like library for pytorch.
 Easy to use and more efficient.
-With the help of FastTorch, the only thing you should do is to define a `nn.Module`, 
-write the `forward`, and call `Learner(module).fit()`. 
+In most cases, the only thing you need to do is to define a `nn.Module`,
+write the `forward`, and call `Learner(module).fit()` with the help of FastTorch.
 
 
 # Setup
@@ -62,23 +62,24 @@ if __name__ == "__main__":
 
 Firstly, the following line should be added before the initializing of learner (and the datasets):
 
-`local_rank = Learner.init_distributed_training(dummy=False)`
+`local_rank = Learner.init_distributed_training(dummy=False, seed=0)`
 
 the `dummy` param is used to debug. If user want to disable parallel temporarily, set `dummy=True`.
-This function will return the `LOCAL_RANK` mentioned by `torch.distributed.launch` tool.
+This function will return the `LOCAL_RANK` mentioned by `torch.distributed.launch` tool. `seed` is the random seed
+used by all the training process, which is optional. FastTorch will choose a random value when it is `None`. 
 
 Then start parallel training with the help of the tool `torch.distributed.launch` offered by pytorch:
 
 `python -m torch.distributed.launch --use_env [your script and parameters]`
 
 NOTE:
-1. `--use_env` is required because FastTorch reads the `LOCAL_RANK` from `os.environ`, 
+1. `--use_env` is required because FastTorch reads the `LOCAL_RANK` from `os.environ`,
    avoiding parses arguments from command line.
 
-1. When using `ModelCheckpoint`, 
+1. When using `ModelCheckpoint`,
    users should ensure only the process whose local rank (or rank in global) equals to 0 saves the checkpoint.
 
-    For example:
+   For example:
     ```
     m.fit(train_loder, 100, 256, T.optim.Adam, T.nn.functional.binary_cross_entropy_with_logits,
           metrics=[(0, 'acc', binary_accuracy_with_logits)],
@@ -87,14 +88,14 @@ NOTE:
     ```
 
 2. Under distributed training scenario, the params `training_set` and `validation_set` in the `fit` function
-   only support offical `DataLoader` instance now. 
-   Ensure they have set `sampler` properly. 
+   only support offical `DataLoader` instance now.
+   Ensure they have set `sampler` properly.
    Users needn't call `sampler.set_epoch` at every epoch beginning, FastTorch will do that for you.
 
 
 ## For more complex module
 
-Overwrite `Learner.forward`, `Learner.compute_losses`, and `Learner.compute_metric` respectively
+Overwrite `Learner.compute_forward`, `Learner.compute_losses`, `Learner.compute_metric`, and `Learner.compute_output` respectively
 to custom the data flow.
 
 
