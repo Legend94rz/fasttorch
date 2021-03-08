@@ -3,7 +3,7 @@
 A keras-like library for pytorch.
 Easy to use and more efficient.
 In most cases, the only thing you need to do is to define a `nn.Module`,
-write the `forward`, and call `Learner(module).fit()` with the help of FastTorch.
+write the `forward`, and call `Learner(module, optim, loss).fit()` with the help of FastTorch.
 
 
 # Setup
@@ -28,16 +28,15 @@ write the `forward`, and call `Learner(module).fit()` with the help of FastTorch
 ## Example code
 
 ```python
-from fasttorch import EarlyStoppingCallback, ReduceLROnPlateauCallback, Learner, binary_accuracy_with_logits, TensorDataLoader
+from fasttorch import *
 from torch import nn
-import torch as T
 import numpy as np
 
-# Define your model:
+
 class SimpleMLP(nn.Module):
     def __init__(self):
         nn.Module.__init__(self)
-        self.ln = nn.Linear(100, 1)
+        self.ln = nn.Sequential(nn.Linear(20, 512), nn.SiLU(), nn.Dropout(0.2), nn.Linear(512, 128), nn.SiLU(), nn.Linear(128, 1))
 
     def forward(self, x):
         return self.ln(x)
@@ -45,16 +44,16 @@ class SimpleMLP(nn.Module):
 
 if __name__ == "__main__":
     # generate some data
-    X = np.random.randn(50000, 100).astype('float32')
-    X[:, 0] = np.random.randint(0, 2, (50000, )).astype('float32')
-    y = X[:, 0].reshape(-1, 1)
+    X = np.random.randn(500000, 20).astype('float32')
+    y = (np.median(X, axis=1, keepdims=True)>0).astype('float32')
+    print(y.mean())
 
     # fast torch:
-    m = Learner(SimpleMLP())
-    m.fit(TensorDataLoader(X[:40000], y[:40000], batch_size=256), 100, 256, T.optim.Adam, T.nn.functional.binary_cross_entropy_with_logits,
+    m = Learner(SimpleMLP(), AdaBelief, BinaryLabelSmoothLoss(0.05))
+    m.fit(TensorDataLoader(X[:400000], y[:400000], batch_size=4096, shuffle=True), 1000, None,
           metrics=[(0, 'acc', binary_accuracy_with_logits)],
-          callbacks=[EarlyStoppingCallback(verbose=True), ReduceLROnPlateauCallback(verbose=True)],
-          validation_set=(X[40000:], y[40000:]), verbose=True)
+          callbacks=[EarlyStoppingCallback(verbose=True, patience=7), ReduceLROnPlateauCallback(verbose=True)],
+          validation_set=TensorDataLoader(X[400000:], y[400000:], batch_size=4096), verbose=True)
 ```
 
 
@@ -73,7 +72,7 @@ Then start parallel training with the help of the tool `torch.distributed.launch
 `python -m torch.distributed.launch --use_env [your script and parameters]`
 
 NOTE:
-1. `--use_env` is required because FastTorch reads the `LOCAL_RANK` from `os.environ`,
+1. `--use_env` is **required** because FastTorch reads the `LOCAL_RANK` from `os.environ`,
    avoiding parses arguments from command line.
 
 1. When using `ModelCheckpoint`,
@@ -81,17 +80,15 @@ NOTE:
 
    For example:
     ```
-    m.fit(train_loder, 100, 256, T.optim.Adam, T.nn.functional.binary_cross_entropy_with_logits,
+    m.fit(train_loder, 100, 256,
           metrics=[(0, 'acc', binary_accuracy_with_logits)],
           callbacks=[ModelCheckpoint('nextshot_{epoch}_{val_acc}.pt', save_best_only=True, verbose=True)] if local_rank==0 else None,
           validation_set=val_loader, verbose=True)
     ```
 
-2. Under distributed training scenario, the params `training_set` and `validation_set` in the `fit` function
-   only support offical `DataLoader` instance now.
-   Ensure they have set `sampler` properly.
-   Users needn't call `sampler.set_epoch` at every epoch beginning, FastTorch will do that for you.
-
+2. FastTorch will add `DistributedSampler` automatically when the values of `training_set` or `validation_set` is not `torch.DataLoader`.
+   Besides, users needn't call `sampler.set_epoch` at every epoch beginning, FastTorch will do that for you.
+   
 
 ## For more complex module
 

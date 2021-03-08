@@ -10,25 +10,10 @@ import sys
 import torch as T
 from pathlib import Path
 from enum import Flag
+import inspect as isp
 from ..callbacks import CallbackList
 from ..data.tensor_dataloader import TensorDataLoader
 from ..misc.seed import seed_everything
-
-
-def _make_dataloader(dataset, batch_size):
-    if dataset is None:
-        return None
-    if isinstance(dataset, Dataset):
-        return DataLoader(dataset, batch_size=batch_size, pin_memory=False)
-    elif isinstance(dataset, DataLoader) or isinstance(dataset, TensorDataLoader):
-        return dataset
-    elif isinstance(dataset, np.ndarray) or isinstance(dataset, T.Tensor):
-        return DataLoader(TensorDataset(T.tensor(dataset)), batch_size=batch_size, pin_memory=False)
-    elif isinstance(dataset, Iterable):
-        dataset = [T.tensor(a) for a in dataset]
-        return DataLoader(TensorDataset(*dataset), batch_size=batch_size, pin_memory=False)
-    else:
-        raise NotImplementedError
 
 
 class LambdaLayer(T.nn.Module):
@@ -63,18 +48,82 @@ class Learner:
         else:
             return 0
 
-    def __init__(self, module):
+    @ staticmethod
+    def _make_dataloader(dataset, batch_size, **kwargs):
+        if isinstance(dataset, DataLoader) or isinstance(dataset, TensorDataLoader):
+            return dataset
+
+        dl_kwargs = {k: v for k, v in kwargs.items() if k not in ('self', 'kwargs', 'batch_size') and k in isp.signature(DataLoader.__init__).parameters}
+        if isinstance(dataset, Dataset):
+            pass
+        elif isinstance(dataset, np.ndarray) or isinstance(dataset, T.Tensor):
+            dataset = TensorDataset(T.tensor(dataset))
+        elif isinstance(dataset, Iterable):
+            dataset = TensorDataset(*[T.tensor(a) for a in dataset])
+        else:
+            raise NotImplementedError
+        if 'sampler' not in dl_kwargs and Learner.__LOCAL_RANK is not None and '__INFERENCE__' not in kwargs:
+            dl_kwargs['sampler'] = DistributedSampler(dataset)
+        return DataLoader(dataset, batch_size=batch_size, **dl_kwargs)
+
+    def __init__(self, module, optimizer_fn=None, loss_fn=None):
+        """
+        :param module:
+        :param optimizer_fn: callable or optim instance.
+        :param loss_fn: callable (including loss instance), list of these two type for multi target, or None.
+                if loss_fn is a list, the last `len(loss_fn)` components of training_set will be considered as labels respectively.
+                besides, `len(loss_fn)` must equal to the number of the module output. and the final loss is simply sumed.
+                If `loss_fn` is None, you must override `compute_losses` function.
+        """
         if Learner.__LOCAL_RANK is None or isinstance(module, DistributedDataParallel):
             self.module = module
         else:
+            self.module = T.nn.SyncBatchNorm.convert_sync_batchnorm(self.module)
             self.module = DistributedDataParallel(module.to('cuda'), device_ids=[Learner.__LOCAL_RANK])
         self.stop_training = False
         self.train_ld = self.val_ld = None
-        self.nloss = self.opt = self.callbacks = None
+        self.nloss = self.opt = None
         self.validation_logging = []
         self.training_logging = []
+        if optimizer_fn:
+            if callable(optimizer_fn):
+                self.opt = optimizer_fn(self.module.parameters())    # other parameters could be passed by `partial`
+            else:
+                assert isinstance(optimizer_fn, T.optim.Optimizer)
+                self.opt = optimizer_fn
+        else:
+            self.opt = None
+        if loss_fn:
+            if not isinstance(loss_fn, Iterable):
+                self.loss_fn = [loss_fn]
+            assert all(callable(x) or None for x in self.loss_fn)
+            self.nloss = len(self.loss_fn)
+        else:
+            self.nloss = None
+            self.loss_fn = None
 
-    def _walk_through_data(self, stage, cur_epoch, total_epochs, loss_fn, metrics, device, verbose):
+    def _iter_one_batch(self, stage, batch, metrics):
+        if stage == Learner.Stage.TRAIN:
+            self.opt.zero_grad()
+        res = self.compute_forward(batch)
+        if not isinstance(res, tuple):
+            res = (res,)
+        if stage != Learner.Stage.INFERENCE:
+            loss = self.compute_losses(res, batch)
+            if stage == Learner.Stage.TRAIN:
+                loss.backward()
+                self.opt.step()
+            metrics_result = {}
+            if metrics:
+                detached = tuple(x.detach() for x in res)
+                for j in range(len(metrics)):
+                    mn = metrics[j][1]
+                    metrics_result[mn] = self.compute_metric(*metrics[j], detached, batch)
+            return loss, metrics_result
+        else:
+            return self.compute_output(res, batch)
+
+    def _walk_through_data(self, stage, cur_epoch, total_epochs, metrics, callbacks, device, verbose):
         assert stage in (Learner.Stage.TRAIN, Learner.Stage.VALIDATION)
         prev_grad_enabled = T.is_grad_enabled()
         if stage == Learner.Stage.TRAIN:
@@ -95,27 +144,15 @@ class Learner:
         pbar = tqdm(enumerate(dataloader), total=len(dataloader), file=sys.stdout, disable=not verbose)
         for i, batch in pbar:
             batch = [c.to(device, non_blocking=True) for c in batch]
-            self.callbacks.on_batch_begin(i, batch, self.training_logging, self.validation_logging)
-            if stage == Learner.Stage.TRAIN:
-                self.opt.zero_grad()
-            res = self.compute_forward(batch)
-            if not isinstance(res, tuple):
-                res = (res, )
-            loss = self.compute_losses(loss_fn, res, batch)
-            if stage == Learner.Stage.TRAIN:
-                loss.backward()
-                self.opt.step()
-            if metrics:
-                detached = tuple(x.detach() for x in res)
-                metrics_output = []
-                for j in range(len(metrics)):
-                    mn = log_prefix + metrics[j][1]
-                    running_mean[mn] = (running_mean[mn] * i + self.compute_metric(*metrics[j], detached, batch)) / (1 + i)
-                    metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
-                metrics_output = ', ' + ', '.join(metrics_output)
-            else:
-                metrics_output = ''
-            self.callbacks.on_batch_end(i, batch, self.training_logging, self.validation_logging)
+            callbacks.on_batch_begin(i, batch, self.training_logging, self.validation_logging)
+            loss, metrics_result = self._iter_one_batch(stage, batch, metrics)
+            metrics_output = []
+            for k, v in metrics_result.items():
+                mn = log_prefix + k
+                running_mean[mn] = (running_mean[mn] * i + v) / (1 + i)
+                metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
+            metrics_output = (', ' if metrics else '') + ', '.join(metrics_output)
+            callbacks.on_batch_end(i, batch, self.training_logging, self.validation_logging)
             running_loss = (running_loss * i + float(loss)) / (1 + i)
             description = f'Epoch [{cur_epoch}/{total_epochs}]: {log_prefix}loss={running_loss:.5f}' + metrics_output
             pbar.set_description(description)
@@ -127,9 +164,8 @@ class Learner:
             return self.module(*batch_data[:-self.nloss])
         return self.module(*batch_data)
 
-    def compute_losses(self, loss_fns, forward_results, batch_data):
+    def compute_losses(self, forward_results, batch_data):
         """
-        :param loss_fns: equals to `loss_fn` in `fit` params
         :param forward_results: tuple. the output of model forward. single output will be wrap to a tuple with len==1.
                if the model only has one objective function while requires multi forward outputs as input,
                use `forward_result[j]` to get j-th forward output component.
@@ -137,7 +173,7 @@ class Learner:
         :return: loss
         """
         target = batch_data[-self.nloss:]
-        loss = sum(loss_fns[j](forward_results[j], target[j]) for j in range(self.nloss))
+        loss = sum(self.loss_fn[j](forward_results[j], target[j]) for j in range(self.nloss))
         return loss
 
     def compute_metric(self, idx, name, func, detached_results, batch_data):
@@ -147,79 +183,90 @@ class Learner:
     def compute_output(self, detached_results, batch_data):
         return tuple(c.cpu().numpy() for c in detached_results)
 
-    def fit(self, training_set, epochs, batch_size, optimizer_fn, loss_fn=None, metrics=None, validation_set=None, callbacks=None, device='cpu', verbose=True):
+    def fit_one_batch(self, batch, metrics, device='cpu'):
+        prev_grad_enabled = T.is_grad_enabled()
+        self.module.train()
+        T.set_grad_enabled(True)
+        batch = [c.to(device, non_blocking=True) for c in batch]
+        loss, metrics_result = self._iter_one_batch(Learner.Stage.TRAIN, batch, metrics)
+        T.set_grad_enabled(prev_grad_enabled)
+        return loss, metrics_result
+
+    def valid_one_batch(self, batch, metrics, device='cpu'):
+        prev_grad_enabled = T.is_grad_enabled()
+        self.module.eval()
+        T.set_grad_enabled(False)
+        batch = [c.to(device, non_blocking=True) for c in batch]
+        loss, metrics_result = self._iter_one_batch(Learner.Stage.VALIDATION, batch, metrics)
+        T.set_grad_enabled(prev_grad_enabled)
+        return loss, {f'val_{k}': v for k, v in metrics_result.items()}
+
+    def predict_one_batch(self, batch, metrics, device='cpu'):
+        prev_grad_enabled = T.is_grad_enabled()
+        self.module.eval()
+        T.set_grad_enabled(False)
+        batch = [c.to(device, non_blocking=True) for c in batch]
+        output = self._iter_one_batch(Learner.Stage.INFERENCE, batch, metrics)
+        T.set_grad_enabled(prev_grad_enabled)
+        return output
+
+    def fit(self, training_set, epochs, batch_size, metrics=None, validation_set=None, callbacks=None, device='cpu', verbose=True, **kwargs):
         """
         :param training_set: (x1, x2, ..., y1, y2, ...), torch Dataset or DataLoader
         :param epochs: int.
         :param batch_size: int. ignored when training_set is `DataLoader` instance.
-        :param optimizer_fn: callable or optim instance.
-        :param loss_fn: callable (including loss instance), list of these two type for multi target, or None.
-                if loss_fn is a list, the last `len(loss_fn)` components of training_set will be considered as labels respectively.
-                besides, `len(loss_fn)` must equal to the number of the module output. and the final loss is simply sumed.
-                If `loss_fn` is None, you must override `compute_losses` function.
         :param metrics: None or list of (output index, 'name', callable)
         :param validation_set: the type is same as `training_set`. used for validation.
         :param callbacks: list of `Callback`
         :param device: string, int, or torch.device.
         :param verbose: bool.
+        :param kwargs: will passed to build dataloader
         :return: tuple. DataFrame of training and validation log.
         """
-        if callable(optimizer_fn):
-            self.opt = optimizer_fn(self.module.parameters())    # other parameters could be passed by `partial`
-        else:
-            assert isinstance(optimizer_fn, T.optim.Optimizer)
-            self.opt = optimizer_fn
-        # todo: loss_fn is [callable] or [Loss instance]
-        if not isinstance(loss_fn, Iterable):
-            loss_fn = [loss_fn]
-        assert all(callable(x) for x in loss_fn)
         callbacks = [] if callbacks is None else callbacks
-        self.callbacks = CallbackList(callbacks)
-        self.callbacks.set_model(self)
-        self.callbacks.set_params({'optimizer': self.opt})
+        callbacks = CallbackList(callbacks)
+        callbacks.set_model(self)
+        callbacks.set_params({'optimizer': self.opt})
 
-        self.train_ld = _make_dataloader(training_set, batch_size)
-        self.val_ld = _make_dataloader(validation_set, batch_size)
-        self.nloss = len(loss_fn)
+        self.train_ld = Learner._make_dataloader(training_set, batch_size, **kwargs)
+        self.val_ld = Learner._make_dataloader(validation_set, batch_size, **kwargs)
         self.module.to(device)
         self.stop_training = False
         self.training_logging = []
         self.validation_logging = []
-        self.callbacks.on_train_begin()
+        callbacks.on_train_begin()
         for e in range(epochs):
             if self.stop_training:
                 break
-            self.callbacks.on_epoch_begin(self.training_logging, self.validation_logging)
-            running_loss, running_mean = self._walk_through_data(Learner.Stage.TRAIN, e, epochs, loss_fn, metrics, device, verbose)
+            callbacks.on_epoch_begin(self.training_logging, self.validation_logging)
+            running_loss, running_mean = self._walk_through_data(Learner.Stage.TRAIN, e, epochs, metrics, callbacks, device, verbose)
             self.training_logging.append({**{'epoch': e, 'loss': running_loss}, **running_mean})
             if validation_set is not None:
-                running_loss, running_mean = self._walk_through_data(Learner.Stage.VALIDATION, e, epochs, loss_fn, metrics, device, verbose)
+                running_loss, running_mean = self._walk_through_data(Learner.Stage.VALIDATION, e, epochs, metrics, callbacks, device, verbose)
                 self.validation_logging.append({**{'epoch': e, 'val_loss': running_loss}, **running_mean})
-            self.callbacks.on_epoch_end(self.training_logging, self.validation_logging)
-        self.callbacks.on_train_end(self.training_logging, self.validation_logging)
+            callbacks.on_epoch_end(self.training_logging, self.validation_logging)
+        callbacks.on_train_end(self.training_logging, self.validation_logging)
         return pd.DataFrame.from_records(self.training_logging), pd.DataFrame.from_records(self.validation_logging)
     
-    def predict(self, X, batch_size, device='cpu', verbose=True):
-        dl = _make_dataloader(X, batch_size)
+    def predict(self, X, batch_size, device='cpu', verbose=True, **kwargs):
+        kwargs['__INFERENCE__'] = True
+        dl = Learner._make_dataloader(X, batch_size, **kwargs)
         output = []
         self.module.eval()
         with T.no_grad():
             # todo: distributed prediction?
-            tmp = None
-            if isinstance(self.module, DistributedDataParallel):
-                tmp = self.module
-                self.module = self.module.module
+            #mbackup = None
+            #if isinstance(self.module, DistributedDataParallel):
+            #    mbackup = self.module
+            #    self.module = self.module.module
             self.module.to(device)
             pbar = tqdm(enumerate(dl), total=len(dl), disable=not verbose, file=sys.stdout)
             for i, batch in pbar:
                 batch = [c.to(device, non_blocking=True) for c in batch]
-                res = self.compute_forward(batch, Learner.Stage.INFERENCE)
-                if not isinstance(res, tuple):
-                    res = (res, )
-                res = self.compute_output(res, batch)
+                res = self._iter_one_batch(Learner.Stage.INFERENCE, batch, None)
                 output.append(res)
-            if tmp is not None:
-                self.module = tmp
+            #if mbackup is not None:
+            #    self.module = mbackup
         tmp = tuple(map(np.concatenate, zip(*output)))
         if len(tmp) == 1:
             return tmp[0]

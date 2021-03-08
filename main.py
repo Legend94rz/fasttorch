@@ -1,6 +1,5 @@
 from fasttorch import *
 from torch import nn
-import torch as T
 import numpy as np
 
 
@@ -20,9 +19,8 @@ if __name__ == "__main__":
     print(y.mean())
 
     # fast torch:
-    m = Learner(SimpleMLP())
-    m.fit(TensorDataLoader(X[:400000], y[:400000], batch_size=4096, shuffle=True), 1000, None, AdaBelief,
-          BinaryLabelSmoothLoss(0.05),
+    m = Learner(SimpleMLP(), AdaBelief, BinaryLabelSmoothLoss(0.05))
+    m.fit(TensorDataLoader(X[:400000], y[:400000], batch_size=4096, shuffle=True), 1000, None,
           metrics=[(0, 'acc', binary_accuracy_with_logits)],
           callbacks=[EarlyStoppingCallback(verbose=True, patience=7), ReduceLROnPlateauCallback(verbose=True)],
           validation_set=TensorDataLoader(X[400000:], y[400000:], batch_size=4096), verbose=True)
