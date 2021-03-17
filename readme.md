@@ -65,7 +65,7 @@ Firstly, the following line should be added before the initializing of learner (
 
 the `dummy` param is used to debug. If user want to disable parallel temporarily, set `dummy=True`.
 This function will return the `LOCAL_RANK` mentioned by `torch.distributed.launch` tool. `seed` is the random seed
-used by all the training process, which is optional. FastTorch will choose a random value when it is `None`. 
+used by all the training process, which is optional. FastTorch will choose a random value when it is `None`.
 
 Then start parallel training with the help of the tool `torch.distributed.launch` offered by pytorch:
 
@@ -88,7 +88,7 @@ NOTE:
 
 2. FastTorch will add `DistributedSampler` automatically when the values of `training_set` or `validation_set` is not `torch.DataLoader`.
    Besides, users needn't call `sampler.set_epoch` at every epoch beginning, FastTorch will do that for you.
-   
+
 
 ## For more complex module
 

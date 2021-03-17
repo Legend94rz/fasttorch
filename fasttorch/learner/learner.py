@@ -48,7 +48,7 @@ class Learner:
         else:
             return 0
 
-    @ staticmethod
+    @staticmethod
     def _make_dataloader(dataset, batch_size, **kwargs):
         if isinstance(dataset, DataLoader) or isinstance(dataset, TensorDataLoader):
             return dataset
@@ -65,6 +65,16 @@ class Learner:
         if 'sampler' not in dl_kwargs and Learner.__LOCAL_RANK is not None and '__INFERENCE__' not in kwargs:
             dl_kwargs['sampler'] = DistributedSampler(dataset)
         return DataLoader(dataset, batch_size=batch_size, **dl_kwargs)
+
+    @staticmethod
+    def _move_batch_to_device(batch, device):
+        if isinstance(batch, tuple) or isinstance(batch, list):
+            batch = [c.to(device, non_blocking=True) for c in batch]
+        elif isinstance(batch, T.Tensor):
+            batch = [batch.to(device, non_blocking=True)]
+        else:
+            raise NotImplementedError
+        return batch
 
     def __init__(self, module, optimizer_fn=None, loss_fn=None):
         """
@@ -105,7 +115,7 @@ class Learner:
     def _iter_one_batch(self, stage, batch, metrics):
         if stage == Learner.Stage.TRAIN:
             self.opt.zero_grad()
-        res = self.compute_forward(batch)
+        res = self.compute_forward(batch, stage)
         if not isinstance(res, tuple):
             res = (res,)
         if stage != Learner.Stage.INFERENCE:
@@ -143,7 +153,7 @@ class Learner:
             dataloader.sampler.set_epoch(cur_epoch)
         pbar = tqdm(enumerate(dataloader), total=len(dataloader), file=sys.stdout, disable=not verbose)
         for i, batch in pbar:
-            batch = [c.to(device, non_blocking=True) for c in batch]
+            batch = Learner._move_batch_to_device(batch, device)
             callbacks.on_batch_begin(i, batch, self.training_logging, self.validation_logging)
             loss, metrics_result = self._iter_one_batch(stage, batch, metrics)
             metrics_output = []
@@ -160,9 +170,9 @@ class Learner:
         return running_loss, running_mean
 
     def compute_forward(self, batch_data, stage=Stage.TRAIN):
-        if stage == Learner.Stage.TRAIN:
-            return self.module(*batch_data[:-self.nloss])
-        return self.module(*batch_data)
+        if stage == Learner.Stage.INFERENCE:
+            return self.module(*batch_data)
+        return self.module(*batch_data[:-self.nloss])
 
     def compute_losses(self, forward_results, batch_data):
         """
@@ -262,7 +272,7 @@ class Learner:
             self.module.to(device)
             pbar = tqdm(enumerate(dl), total=len(dl), disable=not verbose, file=sys.stdout)
             for i, batch in pbar:
-                batch = [c.to(device, non_blocking=True) for c in batch]
+                batch = Learner._move_batch_to_device(batch, device)
                 res = self._iter_one_batch(Learner.Stage.INFERENCE, batch, None)
                 output.append(res)
             #if mbackup is not None:
