@@ -59,13 +59,14 @@ if __name__ == "__main__":
 
 ## About distributed training
 
-Firstly, the following line should be added before the initializing of learner (and the datasets):
+Firstly, the following line should be added before initializing a learner (and the datasets):
 
 `local_rank = Learner.init_distributed_training(dummy=False, seed=0)`
 
 the `dummy` param is used to debug. If user want to disable parallel temporarily, set `dummy=True`.
 This function will return the `LOCAL_RANK` mentioned by `torch.distributed.launch` tool. `seed` is the random seed
-used by all the training process, which is optional. FastTorch will choose a random value when it is `None`.
+used by all the training process, which is optional. FastTorch will choose a random value when it is `None` and ensure
+all the processes have same random seeds.
 
 Then start parallel training with the help of the tool `torch.distributed.launch` offered by pytorch:
 
@@ -76,11 +77,11 @@ NOTE:
    avoiding parses arguments from command line.
 
 1. When using `ModelCheckpoint`,
-   users should ensure only the process whose local rank (or rank in global) equals to 0 saves the checkpoint.
+   users should ensure only one process will save the checkpoint.
 
-   For example:
-    ```
-    m.fit(train_loder, 100, 256,
+   For example, let the process whose `local_rank == 0` writes the checkpoint file:
+    ```{python}
+    m.fit(train_loader, 100, 256,
           metrics=[(0, 'acc', binary_accuracy_with_logits)],
           callbacks=[ModelCheckpoint('nextshot_{epoch}_{val_acc}.pt', save_best_only=True, verbose=True)] if local_rank==0 else None,
           validation_set=val_loader, verbose=True)
@@ -88,6 +89,8 @@ NOTE:
 
 2. FastTorch will add `DistributedSampler` automatically when the values of `training_set` or `validation_set` is not `torch.DataLoader`.
    Besides, users needn't call `sampler.set_epoch` at every epoch beginning, FastTorch will do that for you.
+   
+3. Doesn't support distributed training in jupyter notebook now.
 
 
 ## For more complex module

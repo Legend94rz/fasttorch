@@ -68,10 +68,14 @@ class Learner:
 
     @staticmethod
     def _move_batch_to_device(batch, device):
+        # list or tuple of `Tensor`;
+        # single `Tensor` or `np.ndarray`.
         if isinstance(batch, tuple) or isinstance(batch, list):
             batch = [c.to(device, non_blocking=True) for c in batch]
         elif isinstance(batch, T.Tensor):
             batch = [batch.to(device, non_blocking=True)]
+        elif isinstance(batch, np.ndarray):
+            batch = [T.tensor(batch, device=device)]
         else:
             raise NotImplementedError
         return batch
@@ -116,7 +120,7 @@ class Learner:
         if stage == Learner.Stage.TRAIN:
             self.opt.zero_grad()
         res = self.compute_forward(batch, stage)
-        if not isinstance(res, tuple):
+        if not isinstance(res, tuple):  # if single output
             res = (res,)
         if stage != Learner.Stage.INFERENCE:
             loss = self.compute_losses(res, batch)
@@ -167,6 +171,7 @@ class Learner:
             description = f'Epoch [{cur_epoch}/{total_epochs}]: {log_prefix}loss={running_loss:.5f}' + metrics_output
             pbar.set_description(description)
         T.set_grad_enabled(prev_grad_enabled)
+        del batch, loss
         return running_loss, running_mean
 
     def compute_forward(self, batch_data, stage=Stage.TRAIN):
@@ -177,7 +182,6 @@ class Learner:
     def compute_losses(self, forward_results, batch_data):
         """
         :param forward_results: tuple. the output of model forward. single output will be wrap to a tuple with len==1.
-               if the model only has one objective function while requires multi forward outputs as input,
                use `forward_result[j]` to get j-th forward output component.
         :param batch_data: the output of data_loader's one iter step.
         :return: loss
@@ -194,31 +198,25 @@ class Learner:
         return tuple(c.cpu().numpy() for c in detached_results)
 
     def fit_one_batch(self, batch, metrics, device='cpu'):
-        prev_grad_enabled = T.is_grad_enabled()
-        self.module.train()
-        T.set_grad_enabled(True)
-        batch = [c.to(device, non_blocking=True) for c in batch]
-        loss, metrics_result = self._iter_one_batch(Learner.Stage.TRAIN, batch, metrics)
-        T.set_grad_enabled(prev_grad_enabled)
-        return loss, metrics_result
+        with T.enable_grad():
+            self.module.train()
+            batch = self._move_batch_to_device(batch, device)
+            loss, metrics_result = self._iter_one_batch(Learner.Stage.TRAIN, batch, metrics)
+            return loss, metrics_result
 
     def valid_one_batch(self, batch, metrics, device='cpu'):
-        prev_grad_enabled = T.is_grad_enabled()
-        self.module.eval()
-        T.set_grad_enabled(False)
-        batch = [c.to(device, non_blocking=True) for c in batch]
-        loss, metrics_result = self._iter_one_batch(Learner.Stage.VALIDATION, batch, metrics)
-        T.set_grad_enabled(prev_grad_enabled)
-        return loss, {f'val_{k}': v for k, v in metrics_result.items()}
+        with T.no_grad():
+            self.module.eval()
+            batch = self._move_batch_to_device(batch, device)
+            loss, metrics_result = self._iter_one_batch(Learner.Stage.VALIDATION, batch, metrics)
+            return loss, {f'val_{k}': v for k, v in metrics_result.items()}
 
     def predict_one_batch(self, batch, metrics, device='cpu'):
-        prev_grad_enabled = T.is_grad_enabled()
-        self.module.eval()
-        T.set_grad_enabled(False)
-        batch = [c.to(device, non_blocking=True) for c in batch]
-        output = self._iter_one_batch(Learner.Stage.INFERENCE, batch, metrics)
-        T.set_grad_enabled(prev_grad_enabled)
-        return output
+        with T.no_grad():
+            self.module.eval()
+            batch = self._move_batch_to_device(batch, device)
+            output = self._iter_one_batch(Learner.Stage.INFERENCE, batch, metrics)
+            return output
 
     def fit(self, training_set, epochs, batch_size, metrics=None, validation_set=None, callbacks=None, device='cpu', verbose=True, **kwargs):
         """
@@ -233,6 +231,7 @@ class Learner:
         :param kwargs: will passed to build dataloader
         :return: tuple. DataFrame of training and validation log.
         """
+        assert self.opt is not None, 'No optimizer.'
         callbacks = [] if callbacks is None else callbacks
         callbacks = CallbackList(callbacks)
         callbacks.set_model(self)
@@ -290,10 +289,9 @@ class Learner:
         p.parent.mkdir(parents=True, exist_ok=True)
         T.save(m.state_dict(), fname)
 
-    def load(self, fname, device):
+    def load(self, fname, map_location=None):
         m = self.module
         if isinstance(m, DistributedDataParallel):
             m = m.module
-        m.load_state_dict(T.load(fname, map_location=device))
-        m.to(device)
+        m.load_state_dict(T.load(fname, map_location=map_location))
         return self
