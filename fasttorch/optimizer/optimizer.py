@@ -31,7 +31,8 @@ class AdaBelief(Optimizer):
             update similar to RAdam
         degenerated_to_sgd (boolean, optional) (default:True) If set as True, then perform SGD update
             when variance of gradient is high
-    reference: AdaBelief Optimizer, adapting stepsizes by the belief in observed gradients, NeurIPS 2020
+    Reference: AdaBelief Optimizer, adapting stepsizes by the belief in observed gradients, NeurIPS 2020
+    Implementation: https://github.com/juntang-zhuang/Adabelief-Optimizer
     """
 
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-16,
@@ -189,5 +190,4 @@ class AdaBelief(Optimizer):
                         p.data.addcdiv_(exp_avg, denom, value=-step_size * group['lr'])
                     elif step_size > 0:
                         p.data.add_(exp_avg, alpha=-step_size * group['lr'])
-
         return loss

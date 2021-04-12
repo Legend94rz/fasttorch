@@ -6,11 +6,13 @@ class TensorDataLoader:
     Warning:
         `TensorDataLoader` doesn't support distributed training now.
     """
-    def __init__(self, *tensors, batch_size, shuffle=False):
+    def __init__(self, *tensors, batch_size, shuffle=False, pin_memory=False):
         assert all(t.shape[0] == tensors[0].shape[0] for t in tensors)
         self.dataset_len = tensors[0].shape[0]
-
-        self.tensors = [T.tensor(t) for t in tensors]
+        self.pin_memory = pin_memory and T.cuda.is_available()
+        self.tensors = [T.as_tensor(t) for t in tensors]
+        if self.pin_memory:
+            self.tensors = [t.pin_memory() for t in self.tensors]
         self.batch_size = batch_size
         self.shuffle = shuffle
         # Calculate # batches

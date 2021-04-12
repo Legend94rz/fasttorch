@@ -75,6 +75,12 @@ class CallbackList(BaseCallback):
         for cbk in self.callbacks:
             cbk.on_batch_end(idx, batch_data, training_log, validation_log)
 
+    def __iter__(self):
+        return iter(self.callbacks)
+
+    def __next__(self):
+        return next(self)
+
 
 class ReduceLROnPlateauCallback(BaseCallback):
     def __init__(self, monitor='val_loss', mode='min', factor=0.1, patience=10, verbose=False, threshold=1e-4,

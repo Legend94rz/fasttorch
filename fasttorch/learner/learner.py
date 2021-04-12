@@ -25,6 +25,20 @@ class LambdaLayer(T.nn.Module):
         return self.func(x)
 
 
+class TimeDistributed(T.nn.Module):
+    def __init__(self, module):
+        super(TimeDistributed, self).__init__()
+        self.module = module
+
+    def forward(self, x):
+        # B T ...
+        if len(x.size()) <= 2:
+            return self.module(x)
+        x_reshape = x.contiguous().view(-1, *x.shape[2:])
+        y = self.module(x_reshape)  # B*T ...
+        return y.view(-1, x.shape[1], *y.shape[1:])
+
+
 class Learner:
     __LOCAL_RANK = None
 
@@ -84,10 +98,10 @@ class Learner:
         """
         :param module:
         :param optimizer_fn: callable or optim instance.
-        :param loss_fn: callable (including loss instance), list of these two type for multi target, or None.
-                if loss_fn is a list, the last `len(loss_fn)` components of training_set will be considered as labels respectively.
+        :param loss_fn: callable (including loss instance), list of callable for multi-target module, or None.
+                if loss_fn is a list, the last `len(loss_fn)` components of `training_set` will be considered as labels respectively.
                 besides, `len(loss_fn)` must equal to the number of the module output. and the final loss is simply sumed.
-                If `loss_fn` is None, you must override `compute_losses` function.
+                If `loss_fn` is None, you must override `compute_losses` function for training.
         """
         if Learner.__LOCAL_RANK is None or isinstance(module, DistributedDataParallel):
             self.module = module
@@ -158,9 +172,9 @@ class Learner:
         pbar = tqdm(enumerate(dataloader), total=len(dataloader), file=sys.stdout, disable=not verbose)
         for i, batch in pbar:
             batch = Learner._move_batch_to_device(batch, device)
+            metrics_output = []
             callbacks.on_batch_begin(i, batch, self.training_logging, self.validation_logging)
             loss, metrics_result = self._iter_one_batch(stage, batch, metrics)
-            metrics_output = []
             for k, v in metrics_result.items():
                 mn = log_prefix + k
                 running_mean[mn] = (running_mean[mn] * i + v) / (1 + i)
@@ -198,23 +212,23 @@ class Learner:
         return tuple(c.cpu().numpy() for c in detached_results)
 
     def fit_one_batch(self, batch, metrics, device='cpu'):
+        batch = self._move_batch_to_device(batch, device)
+        self.module.train()
         with T.enable_grad():
-            self.module.train()
-            batch = self._move_batch_to_device(batch, device)
             loss, metrics_result = self._iter_one_batch(Learner.Stage.TRAIN, batch, metrics)
             return loss, metrics_result
 
     def valid_one_batch(self, batch, metrics, device='cpu'):
+        batch = self._move_batch_to_device(batch, device)
+        self.module.eval()
         with T.no_grad():
-            self.module.eval()
-            batch = self._move_batch_to_device(batch, device)
             loss, metrics_result = self._iter_one_batch(Learner.Stage.VALIDATION, batch, metrics)
             return loss, {f'val_{k}': v for k, v in metrics_result.items()}
 
     def predict_one_batch(self, batch, metrics, device='cpu'):
+        batch = self._move_batch_to_device(batch, device)
+        self.module.eval()
         with T.no_grad():
-            self.module.eval()
-            batch = self._move_batch_to_device(batch, device)
             output = self._iter_one_batch(Learner.Stage.INFERENCE, batch, metrics)
             return output
 
