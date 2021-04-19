@@ -80,7 +80,7 @@ NOTE:
    users should ensure only one process will save the checkpoint.
 
    For example, let the process whose `local_rank == 0` writes the checkpoint file:
-    ```{python}
+    ```python
     m.fit(train_loader, 100, 256,
           metrics=[(0, 'acc', binary_accuracy_with_logits)],
           callbacks=[ModelCheckpoint('nextshot_{epoch}_{val_acc}.pt', save_best_only=True, verbose=True)] if local_rank==0 else None,

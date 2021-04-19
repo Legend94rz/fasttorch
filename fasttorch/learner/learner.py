@@ -106,8 +106,8 @@ class Learner:
         if Learner.__LOCAL_RANK is None or isinstance(module, DistributedDataParallel):
             self.module = module
         else:
-            self.module = T.nn.SyncBatchNorm.convert_sync_batchnorm(self.module)
-            self.module = DistributedDataParallel(module.to('cuda'), device_ids=[Learner.__LOCAL_RANK])
+            module_ = T.nn.SyncBatchNorm.convert_sync_batchnorm(module)
+            self.module = DistributedDataParallel(module_.to('cuda'), device_ids=[Learner.__LOCAL_RANK])
         self.stop_training = False
         self.train_ld = self.val_ld = None
         self.nloss = self.opt = None
