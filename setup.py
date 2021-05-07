@@ -6,7 +6,7 @@ setup(
     version='1.0.6',
     author="Legend",
     description="A keras-like library for pytorch.",
-    packages=find_packages(include=('fasttorch', )),
+    packages=find_packages(),
     # 数据文件全部打包
     package_data={"":["*"]},
     # 自动包含受版本控制(svn/git)的数据文件
