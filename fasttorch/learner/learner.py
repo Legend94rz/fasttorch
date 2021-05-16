@@ -290,6 +290,7 @@ class Learner:
                 output.append(res)
             #if mbackup is not None:
             #    self.module = mbackup
+        del batch, dl
         tmp = tuple(map(np.concatenate, zip(*output)))
         if len(tmp) == 1:
             return tmp[0]

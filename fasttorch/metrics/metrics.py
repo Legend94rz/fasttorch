@@ -1,4 +1,4 @@
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, f1_score as sk_f1_score
 import torch as T
 
 
@@ -22,5 +22,9 @@ def mean_squared_error(input: T.Tensor, target: T.Tensor):
     return ((input - target)**2).mean()
 
 
-def mean_absolute_error(y_true, y_pred):
-    return (y_pred - y_true).abs().mean()
+def mean_absolute_error(input, target):
+    return (input - target).abs().mean()
+
+
+def f1_score(input: T.Tensor, target: T.Tensor, **kwargs):
+    return sk_f1_score(target.cpu().numpy().astype('int'), input.cpu().numpy().astype('int'), **kwargs)

@@ -51,7 +51,7 @@ if __name__ == "__main__":
     # fast torch:
     m = Learner(SimpleMLP(), AdaBelief, BinaryLabelSmoothLoss(0.05))
     m.fit(TensorDataLoader(X[:400000], y[:400000], batch_size=4096, shuffle=True), 1000, None,
-          metrics=[(0, 'acc', binary_accuracy_with_logits)],
+          metrics=[(0, 'acc', binary_accuracy_with_logits)],   # compute `binary_accuracy_with_logits` w.r.t the 0-th forward output and the targets
           callbacks=[EarlyStoppingCallback(verbose=True, patience=7), ReduceLROnPlateauCallback(verbose=True)],
           validation_set=TensorDataLoader(X[400000:], y[400000:], batch_size=4096), verbose=True)
 ```
