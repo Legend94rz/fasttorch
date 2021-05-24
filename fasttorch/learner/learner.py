@@ -84,7 +84,7 @@ class Learner:
     def _move_batch_to_device(batch, device):
         # list or tuple of `Tensor`;
         # single `Tensor` or `np.ndarray`.
-        if isinstance(batch, tuple) or isinstance(batch, list):
+        if isinstance(batch, (tuple, list)):
             batch = [c.to(device, non_blocking=True) for c in batch]
         elif isinstance(batch, T.Tensor):
             batch = [batch.to(device, non_blocking=True)]
