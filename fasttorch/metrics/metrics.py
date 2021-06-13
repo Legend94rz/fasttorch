@@ -10,8 +10,13 @@ def binary_accuracy_with_logits(input, target):
     return ((input>0).float() == target).float().mean().cpu().numpy()
 
 
-def categorical_accuracy(input, target):
-    return (input.argmax(dim=-1) == target.argmax(dim=-1)).float().mean().cpu().numpy()
+def sparse_categorical_accuracy(input, target):
+    """
+    :param input: (N, c) Tensor
+    :param target: (N, ) Tensor
+    :return: numpy float
+    """
+    return (input.argmax(dim=-1) == target).float().mean().cpu().numpy()
 
 
 def auc_score(input, target, **kwargs):

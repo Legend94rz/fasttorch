@@ -99,9 +99,10 @@ class Learner:
         :param module:
         :param optimizer_fn: callable or optim instance.
         :param loss_fn: callable (including loss instance), list of callable for multi-target module, or None.
-                if loss_fn is a list, the last `len(loss_fn)` components of `training_set` will be considered as labels respectively.
-                besides, `len(loss_fn)` must equal to the number of the module output. and the final loss is simply sumed.
-                If `loss_fn` is None, you must override `compute_losses` function for training.
+                if loss_fn is a list, the last `len(loss_fn)` components of `training_set` will be considered as
+                labels respectively. Besides, `len(loss_fn)` must equal to the number of the module output. and the
+                final loss is simply summed. If `loss_fn` is None, you must override `compute_losses` function for
+                training.
         """
         if Learner.__LOCAL_RANK is None or isinstance(module, DistributedDataParallel):
             self.module = module
