@@ -11,6 +11,7 @@ import torch as T
 from pathlib import Path
 from enum import Flag
 import inspect as isp
+from functools import partial
 from ..callbacks import CallbackList
 from ..data.tensor_dataloader import TensorDataLoader
 from ..misc.seed import seed_everything
@@ -166,7 +167,7 @@ class Learner:
             dataloader = self.val_ld
             T.set_grad_enabled(False)
 
-        running_mean = defaultdict(float)
+        running_mean = defaultdict(partial(np.zeros, 1))
         running_loss = .0
         if hasattr(dataloader, 'sampler') and isinstance(dataloader.sampler, DistributedSampler):
             dataloader.sampler.set_epoch(cur_epoch)
@@ -179,7 +180,8 @@ class Learner:
             for k, v in metrics_result.items():
                 mn = log_prefix + k
                 running_mean[mn] = (running_mean[mn] * i + v) / (1 + i)
-                metrics_output.append(f'{mn}={running_mean[mn]:.5f}')
+                with np.printoptions(precision=5):
+                    metrics_output.append(f'{mn}={running_mean[mn]}')
             metrics_output = (', ' if metrics else '') + ', '.join(metrics_output)
             callbacks.on_batch_end(i, batch, self.training_logging, self.validation_logging)
             running_loss = (running_loss * i + float(loss)) / (1 + i)
