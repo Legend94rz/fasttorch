@@ -125,8 +125,9 @@ class Learner:
             self.opt = None
         if loss_fn:
             if not isinstance(loss_fn, Iterable):
-                self.loss_fn = [loss_fn]
-            assert all(callable(x) or None for x in self.loss_fn)
+                loss_fn = [loss_fn]
+            assert all(callable(x) or None for x in loss_fn)
+            self.loss_fn = loss_fn
             self.nloss = len(self.loss_fn)
         else:
             self.nloss = None
